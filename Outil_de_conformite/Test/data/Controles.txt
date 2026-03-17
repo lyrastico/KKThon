@@ -1,0 +1,34 @@
+### **1. Facture ↔ Attestation:**
+- ✅ SIRET facture = SIRET attestation
+- ✅ Attestation valide à la date facture
+
+### **2. Facture ↔ Kbis:**
+- ✅ SIRET facture = SIRET Kbis
+- ✅ Raison sociale facture = Raison sociale Kbis
+- ✅ Adresse facture = Adresse Kbis
+
+### **3. Devis ↔ Facture:**
+- ✅ Montant devis ≈ Montant facture (±5%)
+- ✅ Date devis < Date facture
+- ✅ SIRET devis = SIRET facture
+- ✅ TVA devis = TVA facture
+
+### **4. Devis ↔ Attestation:**
+- ✅ SIRET devis = SIRET attestation
+- ✅ Attestation valide à la date devis
+
+### **5. Devis ↔ Kbis:**
+- ✅ SIRET devis = SIRET Kbis
+- ✅ Raison sociale devis = Raison sociale Kbis
+
+### **6. Attestation ↔ Kbis:**
+- ✅ SIRET attestation = SIRET Kbis
+- ✅ Raison sociale attestation = Raison sociale Kbis
+
+### **7. Format IBAN:**
+- ✅ IBAN facture: format valide (FR76...)
+- ✅ Bic
+
+
+siren partie du siret   donc on verifie juste la partie siren .
+
