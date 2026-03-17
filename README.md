@@ -19,10 +19,10 @@ vi - Remplissage automatique de 2 front-ends ; applications métiers, par exempl
 # STRUCTURE DU PROJET
 
 amazon s3 bucket qui contient une archi data lake :
-- raw
-- bronze
-- silver
-- gold
+- raw <- fichiers bruts (images, pdf, etc...)
+- bronze <- fichiers traités par OCR
+- silver <- fichiers traités par LLM
+- gold <- remontée des incohérences entre les différents documents d'un même client
 
 orchestration airflow via astro (astronomer) :
 - raw -> bronze (OCR)
