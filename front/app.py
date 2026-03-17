@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import time
 import os
+from services.auth_service import login as api_login, register as api_register, AuthServiceError
 
 # --- 1. SETUP & THEME ---
 st.set_page_config(page_title="KKthon", layout="wide")
@@ -13,24 +14,33 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_name" not in st.session_state:
     st.session_state.user_name = ""
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
+if "refresh_token" not in st.session_state:
+    st.session_state.refresh_token = None
 
-# Comptes autorisés (à remplacer par un appel API/BDD)
-USERS = {
-    "admin@kkthon.ai": {"password": "admin123", "name": "Admin"},
-    "user@kkthon.ai":  {"password": "user123",  "name": "Utilisateur"},
-}
 
 def login(email, password):
-    user = USERS.get(email)
-    if user and user["password"] == password:
+    try:
+        data = api_login(email, password)
         st.session_state.logged_in = True
-        st.session_state.user_name = user["name"]
-        return True
-    return False
+        st.session_state.access_token = data.get("access_token")
+        st.session_state.refresh_token = data.get("refresh_token")
+        user = data.get("user") or {}
+        st.session_state.user_name = (
+            user.get("user_metadata", {}).get("full_name")
+            or user.get("email", "Utilisateur")
+        )
+        return True, None
+    except AuthServiceError as e:
+        return False, str(e)
+
 
 def logout():
     st.session_state.logged_in = False
     st.session_state.user_name = ""
+    st.session_state.access_token = None
+    st.session_state.refresh_token = None
 
 def load_css():
     css_file = os.path.join("assets", "style.css")
@@ -96,10 +106,12 @@ if selected == "Connexion":
         if submitted:
             if not email or not password:
                 st.error("Veuillez renseigner votre email et votre mot de passe.")
-            elif login(email, password):
-                st.rerun()
             else:
-                st.error("Email ou mot de passe incorrect.")
+                ok, err = login(email, password)
+                if ok:
+                    st.rerun()
+                else:
+                    st.error(err)
 
         st.caption("Pas encore de compte ? Rendez-vous sur la page Inscription.")
 
@@ -127,8 +139,12 @@ elif selected == "Inscription":
             elif not accepted_terms:
                 st.error("Vous devez accepter les conditions d'utilisation.")
             else:
-                st.success("Compte cree avec succes. Vous pouvez maintenant vous connecter.")
-                st.info(f"Bienvenue {full_name}, votre espace {company} est pret.")
+                try:
+                    api_register(email=email, password=password, full_name=full_name)
+                    st.success("Compte créé avec succès. Vous pouvez maintenant vous connecter.")
+                    st.info(f"Bienvenue {full_name}, votre espace {company} est prêt.")
+                except AuthServiceError as e:
+                    st.error(str(e))
 
 elif selected in ("Tableau de bord", "Analyser", "Liste clients", "Historique") and not st.session_state.logged_in:
     st.warning("Veuillez vous connecter pour accéder à cette page.")
