@@ -1,0 +1,3 @@
+-- Colle ici ton schéma SQL Supabase validé.
+-- Tu peux reprendre le script de création des tables que je t'ai donné juste avant.
+-- L'idée : exécuter ce fichier dans Supabase SQL Editor, puis connecter ce backend à ta base.
