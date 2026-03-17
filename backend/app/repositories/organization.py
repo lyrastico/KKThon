@@ -1,0 +1,20 @@
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.organization import Organization
+from app.schemas.organization import OrganizationCreate
+
+
+class OrganizationRepository:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def list(self) -> list[Organization]:
+        result = await self.db.execute(select(Organization).order_by(Organization.created_at.desc()))
+        return list(result.scalars().all())
+
+    async def create(self, payload: OrganizationCreate) -> Organization:
+        item = Organization(**payload.model_dump())
+        self.db.add(item)
+        await self.db.commit()
+        await self.db.refresh(item)
+        return item
