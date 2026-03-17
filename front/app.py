@@ -8,6 +8,30 @@ import os
 # --- 1. SETUP & THEME ---
 st.set_page_config(page_title="KKthon", layout="wide")
 
+# --- SESSION STATE ---
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user_name" not in st.session_state:
+    st.session_state.user_name = ""
+
+# Comptes autorisés (à remplacer par un appel API/BDD)
+USERS = {
+    "admin@kkthon.ai": {"password": "admin123", "name": "Admin"},
+    "user@kkthon.ai":  {"password": "user123",  "name": "Utilisateur"},
+}
+
+def login(email, password):
+    user = USERS.get(email)
+    if user and user["password"] == password:
+        st.session_state.logged_in = True
+        st.session_state.user_name = user["name"]
+        return True
+    return False
+
+def logout():
+    st.session_state.logged_in = False
+    st.session_state.user_name = ""
+
 def load_css():
     css_file = os.path.join("assets", "style.css")
     if os.path.exists(css_path := css_file):
@@ -21,19 +45,38 @@ with st.sidebar:
     st.markdown("<h1 style='font-size: 24px;'>KKthon</h1>", unsafe_allow_html=True)
     st.markdown("<p style='color: #64748b; font-size: 14px;'>Plateforme intelligente d'analyse de documents.</p>", unsafe_allow_html=True)
     st.divider()
-    
-    selected = option_menu(
-        menu_title=None,
-        options=["Connexion", "Inscription", "Tableau de bord", "Analyser", "Liste clients", "Historique"],
-        icons=["box-arrow-in-right", "person-plus", "house-heart", "lightning-charge", "people", "archive"],
-        menu_icon="cast", 
-        default_index=0,
-        styles={
-            "container": {"padding": "0!important", "background-color": "transparent"},
-            "nav-link": {"font-size": "14px", "text-align": "left", "margin":"5px", "--hover-color": "#f1f5f9"},
-            "nav-link-selected": {"background-color": "#0f172a", "color": "white"},
-        }
-    )
+
+    if st.session_state.logged_in:
+        st.caption(f"Connecté : {st.session_state.user_name}")
+        selected = option_menu(
+            menu_title=None,
+            options=["Tableau de bord", "Analyser", "Liste clients", "Historique"],
+            icons=["house-heart", "lightning-charge", "people", "archive"],
+            menu_icon="cast",
+            default_index=0,
+            styles={
+                "container": {"padding": "0!important", "background-color": "transparent"},
+                "nav-link": {"font-size": "14px", "text-align": "left", "margin":"5px", "--hover-color": "#f1f5f9"},
+                "nav-link-selected": {"background-color": "#0f172a", "color": "white"},
+            }
+        )
+        st.divider()
+        if st.button("Se déconnecter", use_container_width=True):
+            logout()
+            st.rerun()
+    else:
+        selected = option_menu(
+            menu_title=None,
+            options=["Connexion", "Inscription"],
+            icons=["box-arrow-in-right", "person-plus"],
+            menu_icon="cast",
+            default_index=0,
+            styles={
+                "container": {"padding": "0!important", "background-color": "transparent"},
+                "nav-link": {"font-size": "14px", "text-align": "left", "margin":"5px", "--hover-color": "#f1f5f9"},
+                "nav-link-selected": {"background-color": "#0f172a", "color": "white"},
+            }
+        )
 
 # --- 3. LOGIQUE DES PAGES ---
 
@@ -53,10 +96,10 @@ if selected == "Connexion":
         if submitted:
             if not email or not password:
                 st.error("Veuillez renseigner votre email et votre mot de passe.")
+            elif login(email, password):
+                st.rerun()
             else:
-                st.success("Connexion reussie. Vous pouvez maintenant acceder a votre espace.")
-                if remember_me:
-                    st.caption("Option activee : la session sera memorisee sur cet appareil.")
+                st.error("Email ou mot de passe incorrect.")
 
         st.caption("Pas encore de compte ? Rendez-vous sur la page Inscription.")
 
@@ -86,6 +129,10 @@ elif selected == "Inscription":
             else:
                 st.success("Compte cree avec succes. Vous pouvez maintenant vous connecter.")
                 st.info(f"Bienvenue {full_name}, votre espace {company} est pret.")
+
+elif selected in ("Tableau de bord", "Analyser", "Liste clients", "Historique") and not st.session_state.logged_in:
+    st.warning("Veuillez vous connecter pour accéder à cette page.")
+    st.stop()
 
 elif selected == "Tableau de bord":
     st.markdown("## Bienvenue, voici vos statistiques")
