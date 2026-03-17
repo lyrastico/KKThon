@@ -10,6 +10,12 @@ class OrganizationCreate(BaseModel):
     is_active: bool = True
 
 
+class OrganizationUpdate(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    is_active: bool | None = None
+
+
 class OrganizationRead(ORMModel):
     id: UUID
     name: str

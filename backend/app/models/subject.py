@@ -1,21 +1,18 @@
 import uuid
-from sqlalchemy import ForeignKey, String
-from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import ForeignKey, Text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
-from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
+from app.models.mixins import UUIDPrimaryKeyMixin, TimestampMixin
 
 
-class Subject(TimestampMixin, UUIDPrimaryKeyMixin, Base):
+class Subject(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "subjects"
 
     organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
-    type: Mapped[str] = mapped_column(String, nullable=False)
-    external_ref: Mapped[str | None] = mapped_column(String)
-    display_name: Mapped[str] = mapped_column(String, nullable=False)
-    legal_identifier: Mapped[str | None] = mapped_column(String)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    external_ref: Mapped[str | None] = mapped_column(Text)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    legal_identifier: Mapped[str | None] = mapped_column(Text)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"))
-
-    organization = relationship("Organization", back_populates="subjects")
-    documents = relationship("Document", back_populates="subject")

@@ -1,4 +1,12 @@
-from app.models.organization import Organization, OrganizationMember
-from app.models.subject import Subject
-from app.models.document import Document, DocumentFile, DocumentType, AnalysisRun, AnalysisFinding, SubjectConsistencyRun, SubjectFinding, DocumentEvent
 from app.models.profile import Profile
+from app.models.organization import Organization
+from app.models.organization_member import OrganizationMember
+from app.models.subject import Subject
+from app.models.document_type import DocumentType
+from app.models.document import Document
+from app.models.document_file import DocumentFile
+from app.models.analysis_run import AnalysisRun
+from app.models.analysis_finding import AnalysisFinding
+from app.models.subject_consistency_run import SubjectConsistencyRun
+from app.models.subject_finding import SubjectFinding
+from app.models.document_event import DocumentEvent

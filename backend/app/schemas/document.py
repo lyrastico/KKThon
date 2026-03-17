@@ -16,6 +16,18 @@ class DocumentCreate(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
+class DocumentUpdate(BaseModel):
+    title: str | None = None
+    status: str | None = None
+    current_file_id: UUID | None = None
+    latest_analysis_run_id: UUID | None = None
+    compliance_status: str | None = None
+    review_status: str | None = None
+    reviewed_by: UUID | None = None
+    reviewed_at: datetime | None = None
+    metadata: dict | None = None
+
+
 class DocumentRead(ORMModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

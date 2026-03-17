@@ -1,20 +1,13 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.organization import Organization
-from app.schemas.organization import OrganizationCreate
+from app.repositories.base import BaseRepository
 
 
-class OrganizationRepository:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+class OrganizationRepository(BaseRepository[Organization]):
+    def __init__(self):
+        super().__init__(Organization)
 
-    async def list(self) -> list[Organization]:
-        result = await self.db.execute(select(Organization).order_by(Organization.created_at.desc()))
-        return list(result.scalars().all())
-
-    async def create(self, payload: OrganizationCreate) -> Organization:
-        item = Organization(**payload.model_dump())
-        self.db.add(item)
-        await self.db.commit()
-        await self.db.refresh(item)
-        return item
+    async def get_by_slug(self, db: AsyncSession, slug: str):
+        result = await db.execute(select(Organization).where(Organization.slug == slug))
+        return result.scalar_one_or_none()

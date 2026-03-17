@@ -14,6 +14,14 @@ class SubjectCreate(BaseModel):
     created_by: UUID | None = None
 
 
+class SubjectUpdate(BaseModel):
+    type: str | None = None
+    external_ref: str | None = None
+    display_name: str | None = None
+    legal_identifier: str | None = None
+    metadata: dict | None = None
+
+
 class SubjectRead(ORMModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
