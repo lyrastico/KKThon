@@ -1,0 +1,67 @@
+==================================================
+RÈGLES DE CONTRÔLE - OUTIL DE CONFORMITÉ
+==================================================
+
+1. CONTRÔLES DE LA FACTURE (Le Pivot)
+--------------------------------------------------
+vs Attestation :
+- ✅ SIREN Facture == SIREN Attestation
+- ✅ Date Facture $\leq$ Date fin de validité Attestation
+
+vs Kbis :
+- ✅ SIREN Facture == SIREN Kbis
+- ✅ Raison Sociale Facture == Raison Sociale Kbis
+- ✅ Adresse Facture == Adresse Kbis
+
+vs RIB :
+- ✅ IBAN écrit sur Facture == IBAN du RIB officiel
+
+Conformité Propre :
+- ✅ Format IBAN valide (ex: FR76...) + présence du BIC
+- ✅ Cohérence mathématique : $HT + TVA = TTC$
+
+2. CONTRÔLES DU DEVIS
+--------------------------------------------------
+vs Facture :
+- ✅ Montant Devis $\approx$ Montant Facture ($\pm 5\%$)
+- ✅ Date Devis $<$ Date Facture
+- ✅ SIREN Devis == SIREN Facture
+- ✅ Taux TVA Devis == Taux TVA Facture
+
+vs Kbis :
+- ✅ SIREN Devis == SIREN Kbis
+- ✅ Raison Sociale Devis == Raison Sociale Kbis
+
+vs Attestation :
+- ✅ SIREN Devis == SIREN Attestation
+- ✅ Date Devis $\leq$ Date fin de validité Attestation
+
+3. CONTRÔLES DE L'ATTESTATION & KBIS
+--------------------------------------------------
+vs Kbis :
+- ✅ SIREN Attestation == SIREN Kbis
+- ✅ Raison Sociale Attestation == Raison Sociale Kbis
+
+Fraude Identité :
+- ✅ SIREN existant dans les bases officielles (INSEE/Pappers)
+- ✅ Statut Kbis = "Actif" (pas de liquidation/radiation)
+
+4. CONTRÔLES DU RIB
+--------------------------------------------------
+vs Kbis :
+- ✅ Nom du Titulaire du compte == Raison Sociale Kbis
+
+vs Géographie :
+- ✅ Pays de l'IBAN cohérent avec le pays du siège social (Kbis)
+
+==================================================
+TABLEAU DE BORD DES ALERTES (RED FLAGS)
+==================================================
+
+Type d'alerte      | Cause                                                            | Gravité
+-------------------|------------------------------------------------------------------|----------------------
+Alerte IBAN        | L'IBAN sur la facture est différent du document RIB.             | 🔴 Critique (Fraude)
+Alerte SIREN       | Le SIREN est inconnu ou incohérent entre les docs.               | 🔴 Bloquant
+Alerte Validité    | La facture est émise après l'expiration de l'attestation.        | 🟠 Majeur (Légal)
+Alerte Montant     | Différence > 5% entre le devis et la facture.                    | 🟡 À vérifier
+Alerte Date        | La facture est datée avant le devis.                             | 🟡 Anomalie

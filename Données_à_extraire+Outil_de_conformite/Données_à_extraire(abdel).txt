@@ -1,0 +1,61 @@
+
+==================================================
+SYNTHÈSE DE L'AGENT D'EXTRACTION (CHECKLIST)
+==================================================
+
+Document    | Données clés à extraire
+------------|---------------------------------------------------------------
+Facture     | SIRET, Raison Sociale, Adresse, Montant TTC, TVA, Date, IBAN, N° Devis
+Devis       | SIRET, Raison Sociale, Montant TTC, Date
+Attestation | SIREN, Raison Sociale, Date de validité, Code vérification
+Kbis        | SIREN, Raison Sociale, Adresse siège
+RIB         | IBAN, Titulaire du compte
+
+==================================================
+DONNÉES À EXTRAIRE - OUTIL DE CONFORMITÉ
+==================================================
+
+1. FACTURE (Le document central)
+--------------------------------------------------
+C'est le pivot de tous les contrôles. L'agent doit extraire :
+
+- Identifiants : SIRET (pour en déduire le SIREN), Numéro de TVA intracommunautaire.
+- Identité : Raison sociale complète, Adresse (pour comparaison Kbis).
+- Finances : Montant HT, Taux de TVA, Montant TTC.
+- Paiement : IBAN et BIC affichés sur le document (crucial pour détecter les détournements).
+- Dates : Date d'émission de la facture.
+- Références : Numéro de facture, Numéro de devis ou de commande associé.
+
+2. DEVIS
+--------------------------------------------------
+Nécessaire pour vérifier la cohérence de la prestation et du montant :
+
+- Identifiants : SIRET (ou SIREN).
+- Identité : Raison sociale.
+- Finances : Montant TTC, Taux de TVA.
+- Dates : Date d'émission du devis.
+
+3. ATTESTATION (Vigilance / Sociale)
+--------------------------------------------------
+Pour s'assurer que le fournisseur est en règle au moment de la transaction :
+
+- Identifiants : SIREN.
+- Identité : Raison sociale.
+- Validité : Date de fin de validité ou date d'édition.
+- Authenticité : Code de sécurité / Code de vérification (si disponible pour vérification API).
+
+4. KBIS
+--------------------------------------------------
+Sert de référentiel d'identité légale :
+
+- Identifiants : SIREN.
+- Identité : Raison sociale exacte, Sigle.
+- Localisation : Adresse du siège social.
+- Statut : État de l'entreprise (pour détecter les sociétés en liquidation).
+
+5. RIB (Référentiel bancaire)
+--------------------------------------------------
+Pour valider que l'argent va au bon endroit :
+
+- Identifiants : IBAN et BIC.
+- Propriété : Nom du titulaire du compte (doit matcher la Raison Sociale).
