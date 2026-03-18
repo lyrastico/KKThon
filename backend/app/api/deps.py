@@ -1,6 +1,7 @@
 from app.repositories.organization import OrganizationRepository
 from app.repositories.subject import SubjectRepository
 from app.repositories.document import DocumentRepository
+from app.repositories.profile import ProfileRepository
 
 from app.repositories.document_file import DocumentFileRepository
 from app.repositories.analysis_run import AnalysisRunRepository
@@ -20,6 +21,10 @@ def get_subject_repo() -> SubjectRepository:
 
 def get_document_repo() -> DocumentRepository:
     return DocumentRepository()
+
+
+def get_profile_repo() -> ProfileRepository:
+    return ProfileRepository()
 
 
 def get_document_file_repo() -> DocumentFileRepository:

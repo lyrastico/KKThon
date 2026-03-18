@@ -8,3 +8,4 @@ pydantic-settings
 python-multipart
 supabase
 httpx
+boto3

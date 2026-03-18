@@ -1,6 +1,6 @@
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from app.schemas.common import ORMModel
 
 
@@ -34,6 +34,8 @@ class DocumentFileUpdate(BaseModel):
 
 
 class DocumentFileRead(ORMModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     document_id: UUID
     storage_bucket: str

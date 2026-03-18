@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     supabase_service_role_key: str | None = None
     supabase_jwt_secret: str | None = None
 
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_default_region: str | None = None
+    s3_bucket_name: str | None = None
+    s3_endpoint_url: str | None = None
+    s3_key_prefix: str = "documents"
+
     cors_origins: str | None = None
 
     model_config = SettingsConfigDict(

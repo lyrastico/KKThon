@@ -1,15 +1,11 @@
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.api.deps import get_analysis_finding_repo, get_analysis_run_repo, get_document_repo
+from app.api.deps import get_analysis_run_repo
 from app.core.security import get_current_user
 from app.db.session import get_db
-from app.repositories.analysis_finding import AnalysisFindingRepository
 from app.repositories.analysis_run import AnalysisRunRepository
-from app.repositories.document import DocumentRepository
 from app.schemas.analysis_run import AnalysisRunCreate, AnalysisRunRead, AnalysisRunUpdate
-from app.schemas.silver import SilverIngestResponse, SilverPayload
-from app.services.silver_mapper import build_analysis_run_data, build_findings_from_silver
 
 router = APIRouter(prefix="/analysis-runs", tags=["analysis-runs"])
 
@@ -34,40 +30,6 @@ async def create_analysis_run(
     current_user=Depends(get_current_user),
 ):
     return await repo.create_from_schema(db, payload)
-
-
-@router.post("/ingest-silver", response_model=SilverIngestResponse)
-async def ingest_silver_analysis(
-    payload: SilverPayload,
-    db: AsyncSession = Depends(get_db),
-    analysis_run_repo: AnalysisRunRepository = Depends(get_analysis_run_repo),
-    analysis_finding_repo: AnalysisFindingRepository = Depends(get_analysis_finding_repo),
-    document_repo: DocumentRepository = Depends(get_document_repo),
-    current_user=Depends(get_current_user),
-):
-    document = await document_repo.get(db, payload.document_id)
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    analysis_run = await analysis_run_repo.create(db, build_analysis_run_data(payload))
-
-    findings = build_findings_from_silver(payload, analysis_run.id)
-    for finding in findings:
-        await analysis_finding_repo.create(db, finding)
-
-    await document_repo.update(
-        db,
-        document,
-        {
-            "latest_analysis_run_id": analysis_run.id,
-            "status": "analyzed",
-        },
-    )
-
-    return SilverIngestResponse(
-        analysis_run_id=analysis_run.id,
-        findings_created=len(findings),
-    )
 
 
 @router.get("/{analysis_run_id}", response_model=AnalysisRunRead)
