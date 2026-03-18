@@ -41,3 +41,9 @@ class SilverPayload(BaseModel):
 class SilverIngestResponse(BaseModel):
     analysis_run_id: UUID
     findings_created: int
+
+
+class SubjectConsistencyExecuteResponse(BaseModel):
+    subject_consistency_run_id: UUID
+    findings_created: int
+    gold_output: dict[str, Any]

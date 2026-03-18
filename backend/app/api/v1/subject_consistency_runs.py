@@ -1,10 +1,15 @@
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.api.deps import get_subject_consistency_run_repo
+from app.api.deps import get_analysis_finding_repo, get_analysis_run_repo, get_document_repo, get_subject_consistency_run_repo, get_subject_finding_repo
 from app.core.security import get_current_user
 from app.db.session import get_db
+from app.repositories.analysis_finding import AnalysisFindingRepository
+from app.repositories.analysis_run import AnalysisRunRepository
+from app.repositories.document import DocumentRepository
 from app.repositories.subject_consistency_run import SubjectConsistencyRunRepository
+from app.repositories.subject_finding import SubjectFindingRepository
+from app.schemas.silver import SubjectConsistencyExecuteResponse
 from app.schemas.subject_consistency_run import (
     SubjectConsistencyRunCreate,
     SubjectConsistencyRunRead,
@@ -12,6 +17,28 @@ from app.schemas.subject_consistency_run import (
 )
 
 router = APIRouter(prefix="/subject-consistency-runs", tags=["subject-consistency-runs"])
+
+
+@router.post("/execute/{subject_id}", response_model=SubjectConsistencyExecuteResponse)
+async def execute_subject_consistency(
+    subject_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    document_repo: DocumentRepository = Depends(get_document_repo),
+    analysis_run_repo: AnalysisRunRepository = Depends(get_analysis_run_repo),
+    analysis_finding_repo: AnalysisFindingRepository = Depends(get_analysis_finding_repo),
+    subject_consistency_run_repo: SubjectConsistencyRunRepository = Depends(get_subject_consistency_run_repo),
+    subject_finding_repo: SubjectFindingRepository = Depends(get_subject_finding_repo),
+    current_user=Depends(get_current_user),
+):
+    service = SubjectConsistencyService(
+        document_repo=document_repo,
+        analysis_run_repo=analysis_run_repo,
+        analysis_finding_repo=analysis_finding_repo,
+        subject_consistency_run_repo=subject_consistency_run_repo,
+        subject_finding_repo=subject_finding_repo,
+    )
+    result = await service.execute(db, subject_id)
+    return SubjectConsistencyExecuteResponse(**result)
 
 
 @router.get("/", response_model=list[SubjectConsistencyRunRead])
@@ -75,3 +102,6 @@ async def delete_subject_consistency_run(
         raise HTTPException(status_code=404, detail="Subject consistency run not found")
     await repo.delete(db, item)
     return {"message": "Subject consistency run deleted"}
+
+
+from app.services.subject_consistency import SubjectConsistencyService

@@ -1,13 +1,34 @@
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.api.deps import get_analysis_run_repo
+from app.api.deps import get_analysis_finding_repo, get_analysis_run_repo, get_document_repo
 from app.core.security import get_current_user
 from app.db.session import get_db
+from app.repositories.analysis_finding import AnalysisFindingRepository
 from app.repositories.analysis_run import AnalysisRunRepository
+from app.repositories.document import DocumentRepository
 from app.schemas.analysis_run import AnalysisRunCreate, AnalysisRunRead, AnalysisRunUpdate
+from app.schemas.silver import SilverIngestResponse, SilverPayload
+from app.services.document_analyzer import DocumentAnalyzerService
 
 router = APIRouter(prefix="/analysis-runs", tags=["analysis-runs"])
+
+
+@router.post("/ingest-silver", response_model=SilverIngestResponse)
+async def ingest_silver_analysis(
+    payload: SilverPayload,
+    db: AsyncSession = Depends(get_db),
+    analysis_run_repo: AnalysisRunRepository = Depends(get_analysis_run_repo),
+    analysis_finding_repo: AnalysisFindingRepository = Depends(get_analysis_finding_repo),
+    document_repo: DocumentRepository = Depends(get_document_repo),
+    current_user=Depends(get_current_user),
+):
+    service = DocumentAnalyzerService(
+        analysis_run_repo=analysis_run_repo,
+        analysis_finding_repo=analysis_finding_repo,
+        document_repo=document_repo,
+    )
+    return await service.ingest_silver_payload(db, payload)
 
 
 @router.get("/", response_model=list[AnalysisRunRead])
