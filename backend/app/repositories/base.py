@@ -25,12 +25,18 @@ class BaseRepository(Generic[ModelType]):
         await db.refresh(item)
         return item
 
+    async def create_from_schema(self, db: AsyncSession, payload):
+        return await self.create(db, payload.model_dump())
+
     async def update(self, db: AsyncSession, db_obj, data: dict):
         for field, value in data.items():
             setattr(db_obj, field, value)
         await db.commit()
         await db.refresh(db_obj)
         return db_obj
+
+    async def update_from_schema(self, db: AsyncSession, db_obj, payload):
+        return await self.update(db, db_obj, payload.model_dump(exclude_unset=True))
 
     async def delete(self, db: AsyncSession, db_obj):
         await db.delete(db_obj)
