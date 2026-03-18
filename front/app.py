@@ -1,9 +1,12 @@
+from datetime import datetime
+
 import streamlit as st
 from streamlit_option_menu import option_menu
 import pandas as pd
 import plotly.express as px
 import time
 import os
+from services.client_service import ClientServiceError, create_client, delete_client, list_clients
 from services.auth_service import login as api_login, register as api_register, AuthServiceError
 
 # --- 1. SETUP & THEME ---
@@ -198,67 +201,76 @@ elif selected == "Analyser":
 elif selected == "Liste clients":
     st.markdown("## Liste clients")
     st.write("Consultez votre portefeuille client, suivez leur statut et accedez rapidement aux informations utiles.")
-
-    clients_df = pd.DataFrame({
-        "Client ID": ["CL-001", "CL-002", "CL-003", "CL-004", "CL-005", "CL-006"],
-        "Nom": ["Sophie Martin", "Karim Benali", "Emma Laurent", "Lucas Petit", "Ines Diallo", "Nathan Robert"],
-        "Entreprise": ["Nova Conseil", "BatiPlus", "Azur Finance", "LogiTrans", "MediCare", "Urban Immo"],
-        "Ville": ["Paris", "Lyon", "Marseille", "Toulouse", "Lille", "Nantes"],
-        "Statut": ["Actif", "Actif", "En attente", "Actif", "Inactif", "En attente"],
-        "Documents": [18, 9, 4, 27, 2, 7],
-        "Dernier envoi": ["15/03/2026", "14/03/2026", "12/03/2026", "16/03/2026", "03/03/2026", "11/03/2026"]
-    })
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Clients total", f"{len(clients_df)}")
-    c2.metric("Clients actifs", f"{(clients_df['Statut'] == 'Actif').sum()}")
-    c3.metric("Documents suivis", f"{clients_df['Documents'].sum()}")
-
-    st.divider()
-
-    col_search, col_filter = st.columns([2, 1])
-    search = col_search.text_input("Rechercher un client", placeholder="Nom, entreprise ou ville")
-    status_filter = col_filter.selectbox("Filtrer par statut", ["Tous", "Actif", "En attente", "Inactif"])
-
-    filtered_df = clients_df.copy()
-
-    if search:
-        search_value = search.lower()
-        filtered_df = filtered_df[
-            filtered_df.apply(
-                lambda row: search_value in " ".join(row.astype(str)).lower(),
-                axis=1
-            )
+ 
+    # --- Appel API liste clients  ---
+    try:
+        raw_clients = list_clients(st.session_state.access_token)
+    except ClientServiceError as e:
+        st.error(str(e))
+        raw_clients = []
+ 
+    clients_df = pd.DataFrame(
+        [
+            {
+                "client_id": str(c.client_id),
+                "Nom": c.client_name,
+                "Date creation": datetime.fromisoformat(c.created_at).strftime("%d/%m/%Y") if c.created_at else "",
+            }
+            for c in raw_clients
         ]
-
-    if status_filter != "Tous":
-        filtered_df = filtered_df[filtered_df["Statut"] == status_filter]
-
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
-
-    st.subheader("Repartition des clients")
-    status_counts = filtered_df["Statut"].value_counts().reset_index()
-    status_counts.columns = ["Statut", "Total"]
-
-    fig_clients = px.bar(
-        status_counts,
-        x="Statut",
-        y="Total",
-        color="Statut",
-        color_discrete_map={
-            "Actif": "#16a34a",
-            "En attente": "#f59e0b",
-            "Inactif": "#ef4444"
-        }
     )
-    fig_clients.update_layout(
-        margin=dict(l=0, r=0, t=30, b=0),
-        height=320,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False
+ 
+    # --- KPIs ---
+    c1, c2 = st.columns(2)
+    c1.metric("Clients total", len(raw_clients))
+    c2.metric(
+        "Documents suivis",
+        sum(getattr(c, "documents_count", 0) for c in raw_clients),
     )
-    st.plotly_chart(fig_clients, use_container_width=True)
+ 
+    st.divider()
+ 
+    # --- Ajout client  ---
+    with st.expander("Ajouter un client", expanded=False):
+        with st.form("add_client_form"):
+            new_name = st.text_input("Nom du client", placeholder="Nom ou raison sociale")
+            submitted = st.form_submit_button("Creer")
+        if submitted:
+            if not new_name.strip():
+                st.error("Le nom du client est obligatoire.")
+            else:
+                try:
+                    create_client(st.session_state.access_token, new_name.strip())
+                    st.success("Client cree avec succes.")
+                    st.rerun()
+                except ClientServiceError as e:
+                    st.error(str(e))
+ 
+    st.divider()
+ 
+    # --- Recjerche & table ---
+    search = st.text_input("Rechercher un client", placeholder="Nom")
+ 
+    filtered_df = clients_df.copy()
+    if search and not filtered_df.empty:
+        filtered_df = filtered_df[
+            filtered_df["Nom"].str.contains(search, case=False, na=False)
+        ]
+ 
+    if filtered_df.empty:
+        st.info("Aucun client trouve.")
+    else:
+        for _, row in filtered_df.iterrows():
+            col_name, col_date, col_del = st.columns([3, 2, 1])
+            col_name.write(row["Nom"])
+            col_date.caption(row["Date creation"])
+            if col_del.button("Supprimer", key=f"del_{row['client_id']}"):
+                try:
+                    delete_client(st.session_state.access_token, row["client_id"])
+                    st.success(f"Client {row['Nom']} supprime.")
+                    st.rerun()
+                except ClientServiceError as e:
+                    st.error(str(e))
 
 elif selected == "Historique":
     st.markdown("## Explorateur de données")
