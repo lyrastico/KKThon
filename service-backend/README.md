@@ -38,9 +38,13 @@ Toutes les routes métier (sauf `/api/v1/auth/*`) exigent :
 `Authorization: Bearer <access_token>`  
 (token renvoyé par `POST /api/v1/auth/login` ou `register`).
 
+**Inscription sans vérification e-mail** : définir **`SUPABASE_SERVICE_ROLE_KEY`** dans l’`.env` du backend uniquement.  
+`POST /auth/register` crée l’utilisateur via l’API Admin avec `email_confirm: true`, puis ouvre une session (pas d’e-mail de confirmation).  
+Sans cette clé, l’endpoint register renvoie `503`.
+
 | Méthode | Route | Description |
 |---------|--------|-------------|
-| POST | `/api/v1/auth/register` | Inscription Supabase |
+| POST | `/api/v1/auth/register` | Inscription (compte déjà confirmé, tokens si OK) |
 | POST | `/api/v1/auth/login` | Connexion |
 | POST | `/api/v1/auth/refresh` | Rafraîchir le token |
 | POST | `/api/v1/auth/forgot-password` | Email reset |
