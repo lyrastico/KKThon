@@ -1,9 +1,10 @@
 """
-## Process Document OCR (S3 -> Document AI -> Bronze)
+## Process Document OCR (S3 -> Document AI -> Bronze/Silver)
 
 This DAG is triggered via the Airflow REST API when a document is uploaded to S3.
 It downloads the document from S3, extracts text using Google Document AI OCR,
-and stores the structured result in the bronze zone of S3.
+stores the OCR output in the bronze zone, then sends the OCR text to Gemini 2.5 Flash
+to extract structured fields and stores the JSON result in the silver zone.
 
 Expected `dag_run.conf`:
 {
@@ -17,6 +18,8 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import os
+import re
 from datetime import datetime as dt
 from pathlib import Path
 
@@ -30,6 +33,95 @@ DOCUMENT_AI_PROCESSOR_ID = "42d5d89ccd74b863"
 
 S3_CONN_ID = "s3_bucket_medaillon"
 GCP_CONN_ID = "document_ai"
+SUPABASE_CONN_ID = "supabase_access"
+
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_SCOPES = ["https://www.googleapis.com/auth/generative-language"]
+
+
+GEMINI_PROMPT = """
+# RÔLE
+
+Tu es un agent spécialisé dans l'extraction de données structurées à partir de textes OCR de documents administratifs français. Ta mission est d'identifier le type de document et d'extraire les informations pertinentes avec une précision absolue.
+
+
+
+# INSTRUCTIONS DE TRAITEMENT
+
+1. IDENTIFICATION : Analyse le texte pour déterminer s'il s'agit d'une Facture, d'un Devis, d'une Attestation (Vigilance/URSSAF), d'un Kbis ou d'un RIB.
+
+2. EXTRACTION : Extraie uniquement les champs définis dans le référentiel ci-dessous.
+
+3. FORMATAGE : 
+
+   - SIRET/SIREN : Supprimer les espaces (ex: 12345678900012).
+
+   - Montants : Float pur (ex: 1250.50), sans devise.
+
+   - Dates : Format ISO 8601 (YYYY-MM-DD).
+
+   - IBAN : Majuscules, sans espaces.
+
+   - ABSENCE : Si une donnée est manquante ou illisible, renvoyer `null`.
+
+
+
+# RÉFÉRENTIEL DES CHAMPS PAR DOCUMENT
+
+- Facture : {siret, raison_sociale, adresse, montant_ttc, tva, date, iban, num_devis}
+
+- Devis : {siret, raison_sociale, montant_ttc, date}
+
+- Attestation : {siren, raison_sociale, date_validite, code_verification}
+
+- Kbis : {siren, raison_sociale, adresse_siege}
+
+- RIB : {iban, titulaire_compte}
+
+
+
+# CONTRAINTES DE SORTIE
+
+- Réponds EXCLUSIVEMENT sous forme d'un objet JSON unique.
+
+- Ne pas ajouter de commentaires, de texte d'introduction ou de conclusion.
+
+- Respecte strictement le schéma suivant :
+
+
+
+{
+
+  "document_detected": "Facture | Devis | Attestation | Kbis | RIB | Inconnu",
+
+  "confidence_score": 0.00,
+
+  "data": {
+
+    "champ_1": "valeur",
+
+    "champ_2": "valeur"
+
+  }
+
+}
+
+
+
+# TEXTE OCR À ANALYSER
+""".strip()
+
+
+def _filename_stem_from_s3_key(key: str) -> str:
+    return Path(key).stem
+
+
+def _strip_json_fences(text: str) -> str:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
 
 
 @dag(
@@ -133,7 +225,7 @@ def process_document_ocr():
         from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 
         source_key = ocr_result["key"]
-        filename = Path(source_key).stem
+        filename = _filename_stem_from_s3_key(source_key)
         bronze_key = f"bronze/{filename}.json"
 
         result_json = {
@@ -173,21 +265,152 @@ def process_document_ocr():
         }
 
     @task
-    def log_result(bronze_info: dict) -> dict:
+    def extract_structured_with_gemini(ocr_result: dict) -> dict:
+        """Send OCR text to Gemini to extract a structured JSON payload."""
+        import requests
+
+        from airflow.providers.google.common.hooks.base_google import GoogleBaseHook
+        from google.auth.transport.requests import Request
+
+        gcp_hook = GoogleBaseHook(gcp_conn_id=GCP_CONN_ID)
+        credentials = gcp_hook.get_credentials()
+        if hasattr(credentials, "with_scopes"):
+            credentials = credentials.with_scopes(GEMINI_SCOPES)
+        credentials.refresh(Request())
+
+        access_token = credentials.token
+        if not access_token:
+            raise RuntimeError("Failed to obtain access token for Gemini API")
+
+        ocr_text = ocr_result.get("text") or ""
+
+        prompt = (
+            GEMINI_PROMPT
+            + "\n\n"
+            + ocr_text
+            + "\n\nRappels: réponds uniquement par un JSON unique, sans ```."
+        )
+
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ]
+        }
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        resp = requests.post(GEMINI_ENDPOINT, headers=headers, json=payload, timeout=180)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text}")
+
+        response_json = resp.json()
+        try:
+            model_text = response_json["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            raise RuntimeError(f"Unexpected Gemini response shape: {response_json}") from e
+
+        parsed_text = _strip_json_fences(model_text)
+        try:
+            structured = json.loads(parsed_text)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Gemini returned non-JSON content: {model_text}") from e
+
+        allowed_docs = {"Facture", "Devis", "Attestation", "Kbis", "RIB", "Inconnu"}
+        doc_type = structured.get("document_detected")
+        if doc_type not in allowed_docs:
+            structured["document_detected"] = "Inconnu"
+
+        try:
+            structured["confidence_score"] = float(structured.get("confidence_score", 0.0))
+        except Exception:
+            structured["confidence_score"] = 0.0
+
+        if not isinstance(structured.get("data"), dict):
+            structured["data"] = {}
+
+        return {
+            "source": {
+                "bucket": ocr_result["bucket"],
+                "key": ocr_result["key"],
+                "mime_type": ocr_result["mime_type"],
+            },
+            "processing": {
+                "model": GEMINI_MODEL,
+                "processed_at": dt.utcnow().isoformat() + "Z",
+            },
+            "result": structured,
+        }
+
+    @task
+    def save_to_silver(gemini_result: dict) -> dict:
+        """Save Gemini structured JSON to the silver zone in S3."""
+        from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+        source_key = gemini_result["source"]["key"]
+        filename = _filename_stem_from_s3_key(source_key)
+        silver_key = f"silver/{filename}.json"
+
+        json_bytes = json.dumps(gemini_result, ensure_ascii=False, indent=2).encode("utf-8")
+
+        s3_hook = S3Hook(aws_conn_id=S3_CONN_ID)
+        s3_hook.load_bytes(
+            bytes_data=json_bytes,
+            key=silver_key,
+            bucket_name=gemini_result["source"]["bucket"],
+            replace=True,
+        )
+
+        print(f"Saved Gemini result to s3://{gemini_result['source']['bucket']}/{silver_key}")
+
+        return {
+            "silver_bucket": gemini_result["source"]["bucket"],
+            "silver_key": silver_key,
+            "size_bytes": len(json_bytes),
+        }
+
+    @task
+    def send_to_supabase_disabled(silver_info: dict) -> dict:
+        """Stub: keep Supabase wiring but disabled for now."""
+        enabled = os.getenv("ENABLE_SUPABASE", "false").lower() in {"1", "true", "yes", "y", "on"}
+        if not enabled:
+            print("Supabase export disabled (set ENABLE_SUPABASE=true to enable later).")
+            return {"supabase_enabled": False, **silver_info}
+
+        from airflow.hooks.base import BaseHook
+
+        conn = BaseHook.get_connection(SUPABASE_CONN_ID)
+        extra = conn.extra_dejson or {}
+        # URL/keys will be used once tables/schema are defined.
+        print(f"Supabase enabled, connection extra keys: {sorted(list(extra.keys()))}")
+        return {"supabase_enabled": True, **silver_info}
+
+    @task
+    def log_result(bronze_info: dict, silver_info: dict) -> dict:
         """Log the final result and return summary."""
         print("=" * 50)
-        print("OCR Processing Complete")
+        print("OCR + Gemini Processing Complete")
         print("=" * 50)
-        print(f"Output: s3://{bronze_info['bronze_bucket']}/{bronze_info['bronze_key']}")
-        print(f"Size: {bronze_info['size_bytes']} bytes")
+        print(f"Bronze: s3://{bronze_info['bronze_bucket']}/{bronze_info['bronze_key']}")
+        print(f"Bronze size: {bronze_info['size_bytes']} bytes")
+        print(f"Silver: s3://{silver_info['silver_bucket']}/{silver_info['silver_key']}")
+        print(f"Silver size: {silver_info['size_bytes']} bytes")
         print("=" * 50)
 
-        return bronze_info
+        return {"bronze": bronze_info, "silver": silver_info}
 
     s3_data = download_from_s3()
     ocr_result = extract_text_with_document_ai(s3_data)
     bronze_info = save_to_bronze(ocr_result)
-    log_result(bronze_info)
+    gemini_result = extract_structured_with_gemini(ocr_result)
+    silver_info = save_to_silver(gemini_result)
+    _ = send_to_supabase_disabled(silver_info)
+    log_result(bronze_info, silver_info)
 
 
 process_document_ocr()

@@ -8,3 +8,6 @@ apache-airflow-providers-google
 
 # Google Document AI SDK
 google-cloud-documentai
+
+# Used for Gemini REST calls
+requests
