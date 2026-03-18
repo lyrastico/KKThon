@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_URL = os.getenv("API_BASE_URL")
-AUTH_URL = f"{BASE_URL}/auth"
+AUTH_URL = f"{BASE_URL}/api/v1/auth"
 
 
 class AuthServiceError(Exception):

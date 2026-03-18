@@ -124,7 +124,6 @@ elif selected == "Inscription":
 
         with st.form("signup_form"):
             full_name = st.text_input("Nom complet", placeholder="Votre nom et prenom")
-            company = st.text_input("Entreprise", placeholder="Nom de votre societe")
             email = st.text_input("Adresse email", placeholder="exemple@kkthon.ai")
             password = st.text_input("Mot de passe", type="password", placeholder="Choisissez un mot de passe")
             confirm_password = st.text_input("Confirmer le mot de passe", type="password", placeholder="Retapez le mot de passe")
@@ -132,7 +131,7 @@ elif selected == "Inscription":
             submitted = st.form_submit_button("Creer mon compte")
 
         if submitted:
-            if not full_name or not company or not email or not password or not confirm_password:
+            if not full_name or not email or not password or not confirm_password:
                 st.error("Veuillez remplir tous les champs obligatoires.")
             elif password != confirm_password:
                 st.error("Les mots de passe ne correspondent pas.")
@@ -141,8 +140,17 @@ elif selected == "Inscription":
             else:
                 try:
                     api_register(email=email, password=password, full_name=full_name)
-                    st.success("Compte créé avec succès. Vous pouvez maintenant vous connecter.")
-                    st.info(f"Bienvenue {full_name}, votre espace {company} est prêt.")
+                    # Se connecte directement après
+                    data = api_login(email=email, password=password)
+                    st.session_state.logged_in = True
+                    st.session_state.access_token = data.get("access_token")
+                    st.session_state.refresh_token = data.get("refresh_token")
+                    user = data.get("user") or {}
+                    st.session_state.user_name = (
+                        user.get("user_metadata", {}).get("full_name")
+                        or user.get("email", "Utilisateur")
+                    )
+                    st.rerun()
                 except AuthServiceError as e:
                     st.error(str(e))
 
