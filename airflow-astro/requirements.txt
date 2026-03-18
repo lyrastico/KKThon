@@ -1,2 +1,13 @@
 # Add Python packages here, one per line. Pin versions where possible.
 
+# AWS S3 provider for S3Hook
+apache-airflow-providers-amazon
+
+# Google Cloud provider for GCP hooks and credentials
+apache-airflow-providers-google
+
+# Google Document AI SDK
+google-cloud-documentai
+
+# Used for Gemini REST calls
+requests
