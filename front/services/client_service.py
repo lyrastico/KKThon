@@ -1,5 +1,8 @@
 import os
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
