@@ -1,45 +1,29 @@
-🛡️ Moteur de Conformité Gold: Logique de Consensus
+🛡️ Résumé – Moteur de Vérification de Conformité (Gold Layer)
+Notre moteur automatise la vérification complète d’un dossier fournisseur en croisant toutes les informations issues des documents (Facture, Devis, RIB, Attestations).
+1. Vérification d’Identité Légale (API SIREN)
+- Extraction du SIREN depuis les documents.
+- Vérification en temps réel via l’API Entreprises (Gouv).
+- Condition : Le SIREN doit exister et l’entreprise doit être Active.
+- Alerte : FAIL si SIREN inconnu ou entreprise fermée.
+2. Consensus d’Identité (Cross-check SIREN)
+- Comparaison du SIREN entre facture, devis, attestations.
+- Condition : Tous les SIREN doivent être identiques.
+- Alerte : FAIL en cas de divergence.
+3. Cohérence de Paiement (IBAN Match)
+- Comparaison IBAN facture ↔ RIB.
+- Condition : Les deux IBAN doivent correspondre exactement.
+- Alerte : FAIL si différence (risque de fraude ou erreur de virement).
+4. Intégrité Financière (Montant TTC)
+- Comparaison du montant total facture ↔ devis.
+- Condition : Écart ≤ 5 %.
+- Alerte : WARNING si dépassement (validation humaine requise).
+5. Chronologie & Validité Temporelle
+- Vérification des dates (devis, facture, attestations).
+- Règle A : Le devis doit précéder la facture.
+- Règle B : La facture doit être émise pendant la période de validité des attestations.
+- Alerte : WARNING si documents périmés.
 
-Objectif
-L'objectif de ce moteur est de vérifier la cohérence d'un dossier client sans dépendre d'un seul document "pivot".
-Le système compare chaque pièce du puzzle avec toutes les autres.
-Si une seule pièce ment, le lot est rejeté.
-
-1. Identité: Le Consensus SIREN
-- La règle: 100% des documents fournis (Facture, Devis, Kbis, Attestations) doivent afficher le même SIREN.
-- La robustesse: le moteur extrait le SIREN depuis le champ siren, les 9 premiers chiffres du siret, ou les 9 derniers chiffres du numéro de TVA.
-- Alerte rouge 🔴: si la Facture affiche un SIREN différent du Devis ou des Attestations (comme dans ton test43), le dossier est immédiatement marqué en fail.
-
-2. Finances: Le Triangle de l'IBAN et des montants
-- Validation RIB: l'IBAN extrait du document RIB doit être identique à celui écrit en texte sur la Facture.
-	Pas de correspondance = risque de détournement de fonds.
-- Le seuil des 5%: on accepte une variation de 5% maximum entre le montant TTC du Devis et celui de la Facture
-	(pour gérer les petits ajustements de fin de chantier).
-- Vérification nominale: le titulaire du compte sur le RIB doit correspondre à la raison sociale trouvée sur les autres documents.
-
-3. Légalité: Temporalité et validité
-- Chronologie commerciale: un Devis doit toujours être daté avant, ou le même jour que la Facture.
-	On ne facture pas avant d'avoir proposé.
-- Couverture sociale: la Facture doit avoir été émise pendant la période de validité des attestations (URSSAF / Fiscale).
-	Si l'attestation est périmée au moment de la facture, c'est un risque de solidarité financière pour le client.
-- Multi-vérification: si l'utilisateur donne 3 attestations, on vérifie le SIREN sur les trois,
-	mais on valide le dossier si au moins une d'entre elles couvre la date de la facture.
-
-4. Robustesse technique (anti-erreur IA)
-- Polyvalence des clés: le code ne cherche pas qu'un seul mot.
-	Il scanne montant_ttc, total_ttc, amount_ttc, etc., pour être sûr de ne rien rater.
-- Normalisation: toutes les comparaisons de texte se font en minuscules, sans espaces et sans caractères spéciaux,
-	pour éviter qu'un "SARL" vs "s.a.r.l" ne bloque le système.
-- Adaptabilité: si le Kbis est manquant, le système compare la Facture au Devis.
-	S'il n'y a que la Facture et le RIB, il valide l'IBAN.
-	Le moteur fait le maximum avec ce qu'on a.
-
-🚨 Tableau des alertes (Red Flags)
-
-| Alerte          | Cause                                               | Gravité          |
-|-----------------|-----------------------------------------------------|------------------|
-| SIREN_MATCH     | Identité différente entre deux documents            | 🔴 Critique      |
-| IBAN_COHERENCE  | L'IBAN de la facture n'est pas celui du RIB         | 🔴 Critique      |
-| LEGAL_VALIDITY  | Attestation périmée à la date de facturation        | 🟠 Majeur        |
-| AMOUNT_CHECK    | Écart de montant > 5% entre Devis et Facture        | 🟡 Avertissement |
-| DATE_ORDER      | Facture datée avant le Devis                        | 🟡 Anomalie      |
+🎯 Points clés à retenir
+- Automatisé : Plus besoin de vérifier manuellement sur Societe.com, tout est fait via API.
+- Robuste : Le moteur ne fait confiance à aucun document isolé, il croise toutes les données.
+- Scalable : Capable d’analyser des dizaines de documents en quelques secondes.
