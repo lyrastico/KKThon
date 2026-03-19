@@ -56,14 +56,11 @@ async def upload_file(
 
     ct = file.content_type
     original = file.filename or "upload"
-    key = s3svc.build_raw_key(content, original, ct)
-
-    existing = await file_repo.get_file_by_s3_raw_path(db, key)
-    if existing:
-        return existing
 
     try:
-        s3svc.upload_raw_file(content, original_filename=original, content_type=ct)
+        key = s3svc.upload_raw_file(
+            content, original_filename=original, content_type=ct
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
     except RuntimeError as e:
@@ -82,9 +79,9 @@ async def upload_file(
         return f
     except IntegrityError:
         await db.rollback()
-        again = await file_repo.get_file_by_s3_raw_path(db, key)
-        if again:
-            return again
+        existing = await file_repo.get_file_by_s3_raw_path(db, key)
+        if existing:
+            return existing
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate key")
 
 
