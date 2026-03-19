@@ -1,189 +1,189 @@
 import logging
 from uuid import UUID
 from datetime import datetime
-from typing import Optional, List, Dict
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user
-from app.db.session import get_db
-from app.schemas.conformity_report import (
-    ConformityReportCreate,
-    ConformityReportRead,
-)
-import app.repositories.client as client_repo
-import app.repositories.conformity_report as report_repo
-import app.repositories.file as file_repo
-
-# Configuration du logger pour le suivi en temps réel
+# Configuration du logger
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/conformity-reports", tags=["conformity-reports"])
+# --- UTILS D'EXTRACTION ET NETTOYAGE ---
 
-# --- HELPERS D'EXTRACTION ROBUSTE ---
-
-def get_siren_from_obj(data: dict) -> str:
-    """
-    Extrait le SIREN (9 chiffres). 
-    Si seul le SIRET est présent, récupère les 9 premiers chiffres.
-    """
+def get_siren(data: dict) -> str:
+    """Extrait le SIREN (9 chiffres) depuis siren, siret ou TVA."""
     val = data.get('siren') or data.get('siret')
-    if not val:
-        return ""
-    # Nettoyage : enlève espaces et garde les 9 premiers caractères
+    if not val and data.get('tva'):
+        tva = str(data.get('tva')).replace(" ", "")
+        if len(tva) >= 11: val = tva[-9:] # Les 9 derniers chiffres du TVA FR
+    
+    if not val: return ""
     return str(val).replace(" ", "").strip()[:9]
 
 def get_ttc_amount(data: dict) -> float:
-    """
-    Cherche le montant TTC en testant les différentes clés possibles 
-    générées par l'IA (montant_ttc, amount_ttc, etc.)
-    """
+    """Extrait le montant TTC via plusieurs clés possibles."""
     for key in ['montant_ttc', 'amount_ttc', 'total_ttc', 'total_amount']:
-        val = data.get(key)
-        if val is not None:
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                continue
+        if data.get(key) is not None:
+            try: return float(data.get(key))
+            except: continue
     return 0.0
 
-# --- LOGIQUE DE GÉNÉRATION (SERVICE) ---
+def clean_text(val: Any) -> str:
+    """Normalise le texte pour comparaison (minuscule, sans espaces)."""
+    if not val: return ""
+    return str(val).strip().lower().replace(" ", "")
+
+# --- MOTEUR DE CONFORMITÉ (CONSENSUS GLOBAL) ---
 
 async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
     """
-    Analyse les fichiers Silver pour générer le rapport de conformité Gold.
-    Gère la structure result -> data et les variations de clés.
+    Analyse de conformité robuste :
+    Chaque document doit corroborer les autres. Un seul conflit invalide le lot.
     """
-    docs = {}
-    attestations = []  # Liste pour stocker plusieurs attestations (URSSAF, Fiscale, etc.)
+    docs_data = [] # Liste de tous les documents extraits
     source_files_meta = []
     
-    # 1. Sourcing et Extraction
+    # 1. Chargement et Normalisation
     for f in files:
         if f.processing_status == "done":
-            source_files_meta.append({
-                "file_id": str(f.id),
-                "type": f.type,
-                "s3_raw_path": getattr(f, 's3_raw_path', None)
-            })
-            
-            # Accès sécurisé à silver_content -> result -> data
             silver = f.silver_content if isinstance(f.silver_content, dict) else {}
-            content = silver.get("result", {}).get("data", {})
+            # Support structure 'result' -> 'data'
+            content = silver.get("result", {}).get("data", {}) or silver.get("data", {})
             
-            doc_type = f.type.lower()
-            if "attestation" in doc_type:
-                attestations.append(content)
-            else:
-                docs[doc_type] = content
-
-    logger.info(f"[GOLD-GEN] Client {client_id}: {len(source_files_meta)} fichiers chargés.")
+            doc_info = {
+                "type": f.type.lower(),
+                "file_id": str(f.id),
+                "siren": get_siren(content),
+                "amount": get_ttc_amount(content),
+                "date": content.get('date') or content.get('date_edition'),
+                "raison_sociale": content.get('raison_sociale') or content.get('denomination'),
+                "iban": str(content.get('iban', "")).replace(" ", "").upper(),
+                "raw_content": content
+            }
+            docs_data.append(doc_info)
+            source_files_meta.append({"file_id": str(f.id), "type": f.type})
 
     checks = []
     errors = []
 
-    # --- RÈGLES MÉTIER ---
+    if not docs_data:
+        return {"results": {"status_global": "error", "errors": ["Aucun fichier 'done' trouvé."]}}
 
-    # A. Pivot SIREN (Récupéré depuis le KBIS)
-    kbis = docs.get('kbis', {})
-    siren_ref = get_siren_from_obj(kbis)
+    # --- RÈGLE 1 : CONSENSUS SIREN STRICT (TOUS les documents) ---
+    # On identifie le SIREN majoritaire ou le premier trouvé
+    sirens_found = [d['siren'] for d in docs_data if d['siren']]
     
-    if not siren_ref:
-        msg = "SIREN de référence introuvable dans le KBIS (Données manquantes)."
-        logger.error(f"[GOLD-GEN] {msg}")
-        errors.append(msg)
+    if not sirens_found:
+        errors.append("Aucun identifiant (SIREN/SIRET) trouvé dans les documents.")
     else:
-        logger.info(f"[GOLD-GEN] SIREN de référence : {siren_ref}")
+        # On définit une référence (ex: le premier trouvé)
+        ref_siren = sirens_found[0]
+        all_match = True
+        
+        for doc in docs_data:
+            if doc['siren']:
+                match = (doc['siren'] == ref_siren)
+                if not match: all_match = False
+                checks.append({
+                    "code": f"SIREN_CHECK_{doc['type'].upper()}",
+                    "label": f"Validation SIREN : {doc['type']}",
+                    "status": "pass" if match else "fail",
+                    "details": {"found": doc['siren'], "expected": ref_siren}
+                })
+        
+        if not all_match:
+            errors.append("Conflit d'identité : Les SIREN ne sont pas identiques sur tous les documents.")
 
-        # Comparaison SIREN Facture
-        if 'facture' in docs:
-            f_siren = get_siren_from_obj(docs['facture'])
+    # --- RÈGLE 2 : COHÉRENCE RAISON SOCIALE ---
+    names = [d for d in docs_data if d['raison_sociale']]
+    if len(names) > 1:
+        ref_name = clean_text(names[0]['raison_sociale'])
+        for n in names[1:]:
+            current_name = clean_text(n['raison_sociale'])
+            # Vérification par inclusion pour gérer "SARL", "SAS", etc.
+            is_ok = ref_name in current_name or current_name in ref_name
             checks.append({
-                "code": "SIREN_FACTURE",
-                "label": "Cohérence SIREN Facture vs Kbis",
-                "status": "pass" if f_siren == siren_ref else "fail",
-                "details": {"found": f_siren, "expected": siren_ref}
+                "code": f"NAME_CHECK_{n['type'].upper()}",
+                "label": f"Raison Sociale : {n['type']}",
+                "status": "pass" if is_ok else "warning",
+                "details": {"found": n['raison_sociale'], "reference": names[0]['raison_sociale']}
             })
 
-        # Comparaison SIREN Devis
-        if 'devis' in docs:
-            d_siren = get_siren_from_obj(docs['devis'])
-            checks.append({
-                "code": "SIREN_DEVIS",
-                "label": "Cohérence SIREN Devis vs Kbis",
-                "status": "pass" if d_siren == siren_ref else "fail",
-                "details": {"found": d_siren, "expected": siren_ref}
-            })
-
-        # Comparaison SIREN Attestations (Vérifie si au moins une est valide)
-        if attestations:
-            att_ok = any(get_siren_from_obj(a) == siren_ref for a in attestations)
-            checks.append({
-                "code": "SIREN_ATTESTATION",
-                "label": "Cohérence SIREN Attestations vs Kbis",
-                "status": "pass" if att_ok else "fail",
-                "details": {"expected": siren_ref, "count_analyzed": len(attestations)}
-            })
-
-    # B. IBAN Match (Facture vs RIB)
-    if 'facture' in docs and 'rib' in docs:
-        iban_f = str(docs['facture'].get('iban', "")).replace(" ", "").upper()
-        iban_r = str(docs['rib'].get('iban', "")).replace(" ", "").upper()
-        is_iban_ok = (iban_f == iban_r and iban_f != "")
+    # --- RÈGLE 3 : IBAN (RIB vs FACTURE) ---
+    facture = next((d for d in docs_data if "facture" in d['type']), None)
+    rib = next((d for d in docs_data if "rib" in d['type']), None)
+    if facture and rib:
+        match = (facture['iban'] == rib['iban'] and rib['iban'] != "")
         checks.append({
-            "code": "IBAN_MATCH",
-            "label": "IBAN Facture conforme au RIB",
-            "status": "pass" if is_iban_ok else "fail",
-            "details": {"match": is_iban_ok}
+            "code": "IBAN_COHERENCE",
+            "label": "IBAN : Facture vs RIB",
+            "status": "pass" if match else "fail",
+            "details": {"match": match}
         })
 
-    # C. Montants (Seuil de tolérance 5%)
-    if 'facture' in docs and 'devis' in docs:
-        mt_f = get_ttc_amount(docs['facture'])
-        mt_d = get_ttc_amount(docs['devis'])
-        
+    # --- RÈGLE 4 : MONTANTS (FACTURE vs DEVIS) ---
+    devis = next((d for d in docs_data if "devis" in d['type']), None)
+    if facture and devis:
+        mt_f = facture['amount']
+        mt_d = devis['amount']
         diff = abs(mt_f - mt_d) / mt_d if mt_d > 0 else (1.0 if mt_f > 0 else 0.0)
-        
         checks.append({
-            "code": "AMOUNT_CHECK",
-            "label": "Écart montant Facture/Devis < 5%",
+            "code": "AMOUNT_CONSISTENCY",
+            "label": "Montant TTC : Facture vs Devis",
             "status": "pass" if diff <= 0.05 else "warning",
             "details": {"diff_percent": round(diff * 100, 2), "invoice": mt_f, "quote": mt_d}
         })
 
-    # D. Dates (Antériorité du devis)
-    if 'facture' in docs and 'devis' in docs:
-        date_f = docs['facture'].get('date')
-        date_d = docs['devis'].get('date')
-        if date_f and date_d:
+    # --- RÈGLE 5 : CHRONOLOGIE ET VALIDITÉ ---
+    if facture:
+        f_date = facture['date']
+        # vs Devis
+        if devis and devis['date'] and f_date:
             checks.append({
-                "code": "DATE_ORDER",
-                "label": "Antériorité du Devis sur la Facture",
-                "status": "pass" if date_d <= date_f else "warning",
-                "details": {"quote_date": date_d, "invoice_date": date_f}
+                "code": "DATE_CHRONOLOGY",
+                "label": "Chronologie : Devis avant Facture",
+                "status": "pass" if devis['date'] <= f_date else "warning",
+                "details": {"devis": devis['date'], "facture": f_date}
+            })
+        
+        # vs Attestations (Doit être couverte par AU MOINS UNE attestation valide)
+        attestations = [d for d in docs_data if "attestation" in d['type']]
+        if attestations and f_date:
+            valid_att = False
+            for att in attestations:
+                # On cherche la date de fin de validité
+                end_date = att['raw_content'].get('date_validite') or att['raw_content'].get('periode_fin')
+                if end_date and f_date <= end_date:
+                    valid_att = True
+                    break
+            checks.append({
+                "code": "LEGAL_VALIDITY",
+                "label": "Attestation valide à la date facture",
+                "status": "pass" if valid_att else "warning",
+                "details": {"invoice_date": f_date}
             })
 
-    # Calcul du statut global
-    status_global = "fail" if any(c["status"] == "fail" for c in checks) else "pass"
-    if not source_files_meta:
-        status_global = "unknown"
+    # --- SYNTHÈSE FINALE ---
+    status_global = "pass"
+    if any(c["status"] == "fail" for c in checks): status_global = "fail"
+    elif any(c["status"] == "warning" for c in checks): status_global = "warning"
+    if errors: status_global = "fail"
 
     return {
         "meta": {
             "client_id": str(client_id),
             "generated_at": datetime.utcnow().isoformat(),
-            "rule_set_version": "v1",
+            "rule_set_version": "v3_consensus_strict",
             "source_files": source_files_meta
         },
         "results": {
             "status_global": status_global,
             "checks": checks,
-            "missing_documents": [],
             "errors": errors
         }
     }
 
-# --- ROUTES API ---
+# --- ROUTES FASTAPI ---
 
 @router.post("", response_model=ConformityReportRead, status_code=status.HTTP_201_CREATED)
 async def create_report(
@@ -191,73 +191,21 @@ async def create_report(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    # Vérification de propriété
-    c = await client_repo.get_client(db, payload.client_id)
-    if not c or str(c.user_id) != str(current_user.id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    # Vérification accès client
+    client = await client_repo.get_client(db, payload.client_id)
+    if not client or str(client.user_id) != str(current_user.id):
+        raise HTTPException(status_code=404, detail="Client not found")
 
-    # Récupération des fichiers
+    # Récupération des fichiers Silver
     files = await file_repo.list_files_for_client(db, payload.client_id)
     
-    # Génération de l'analyse Gold
+    # Génération de l'analyse Gold par consensus
     gold_content = await generate_gold_analysis(payload.client_id, files)
 
-    # Déduction du statut technique
-    final_status = "done"
-    if not files or not gold_content["meta"]["source_files"]:
-        final_status = "error"
-
-    # Sauvegarde en base
+    # Création du rapport
     return await report_repo.create_report(
         db,
         client_id=payload.client_id,
         gold_content=gold_content,
-        s3_gold_path=None,
-        silver_content=None,
-        processing_status=final_status,
+        processing_status="done" if gold_content["results"].get("status_global") != "error" else "error"
     )
-
-@router.get("", response_model=List[ConformityReportRead])
-async def list_reports(
-    client_id: UUID = Query(...),
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=200),
-):
-    c = await client_repo.get_client(db, client_id)
-    if not c or str(c.user_id) != str(current_user.id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
-    return await report_repo.list_reports_for_client(db, client_id, skip=skip, limit=limit)
-
-@router.get("/{report_id}", response_model=ConformityReportRead)
-async def get_report(
-    report_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    r = await report_repo.get_report(db, report_id)
-    if not r:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
-    
-    c = await client_repo.get_client(db, r.client_id)
-    if not c or str(c.user_id) != str(current_user.id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
-    return r
-
-@router.delete("/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_report(
-    report_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    r = await report_repo.get_report(db, report_id)
-    if not r:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
-    
-    c = await client_repo.get_client(db, r.client_id)
-    if not c or str(c.user_id) != str(current_user.id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
-        
-    await report_repo.delete_report(db, r)
-    return None
