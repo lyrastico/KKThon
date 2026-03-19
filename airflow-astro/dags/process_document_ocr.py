@@ -372,14 +372,10 @@ def process_document_ocr():
             "silver_bucket": gemini_result["source"]["bucket"],
             "silver_key": silver_key,
             "size_bytes": len(json_bytes),
-            "s3_raw_path": gemini_result["source"]["key"],
-            "s3_silver_path": silver_key,
-            "silver_content": gemini_result,
-            "document_type": (gemini_result.get("result") or {}).get("document_detected"),
         }
 
     @task
-    def sync_to_supabase(silver_info: dict) -> dict:
+    def sync_to_supabase(gemini_result: dict) -> dict:
         """Update `public.files` row matching `s3_raw_path` with silver results."""
         import requests
 
@@ -395,9 +391,13 @@ def process_document_ocr():
                 "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in connection extra for supabase_access"
             )
 
-        s3_raw_path = silver_info.get("s3_raw_path")
+        s3_raw_path = (gemini_result.get("source") or {}).get("key")
         if not s3_raw_path:
-            raise ValueError(f"Missing s3_raw_path in silver_info: {silver_info}")
+            raise ValueError(f"Missing source.key in gemini_result: {gemini_result}")
+
+        filename = _filename_stem_from_s3_key(str(s3_raw_path))
+        s3_silver_path = f"silver/{filename}.json"
+        document_type = (gemini_result.get("result") or {}).get("document_detected")
 
         # We patch (update) the existing row created by the backend on upload.
         # If no row matches, we fail the task.
@@ -405,9 +405,9 @@ def process_document_ocr():
         endpoint = f"{supabase_url.rstrip('/')}/rest/v1/files?s3_raw_path=eq.{encoded_path}"
 
         payload = {
-            "s3_silver_path": silver_info.get("s3_silver_path"),
-            "silver_content": silver_info.get("silver_content"),
-            "type": silver_info.get("document_type"),
+            "s3_silver_path": s3_silver_path,
+            "silver_content": gemini_result,
+            "type": document_type,
             "processing_status": "done",
         }
 
@@ -432,10 +432,15 @@ def process_document_ocr():
             )
 
         print(f"Updated Supabase files row for s3_raw_path={s3_raw_path}")
-        return {"supabase_updated": True, "updated_count": len(updated), **silver_info}
+        return {
+            "supabase_updated": True,
+            "updated_count": len(updated),
+            "s3_raw_path": s3_raw_path,
+            "s3_silver_path": s3_silver_path,
+        }
 
     @task
-    def log_result(bronze_info: dict, silver_info: dict) -> dict:
+    def log_result(bronze_info: dict, silver_info: dict, supabase_info: dict) -> dict:
         """Log the final result and return summary."""
         print("=" * 50)
         print("OCR + Gemini Processing Complete")
@@ -444,17 +449,25 @@ def process_document_ocr():
         print(f"Bronze size: {bronze_info['size_bytes']} bytes")
         print(f"Silver: s3://{silver_info['silver_bucket']}/{silver_info['silver_key']}")
         print(f"Silver size: {silver_info['size_bytes']} bytes")
+        print(f"Supabase updated: {supabase_info.get('supabase_updated')}")
+        print(f"Supabase updated rows: {supabase_info.get('updated_count')}")
         print("=" * 50)
 
-        return {"bronze": bronze_info, "silver": silver_info}
+        return {"bronze": bronze_info, "silver": silver_info, "supabase": supabase_info}
 
     s3_data = download_from_s3()
     ocr_result = extract_text_with_document_ai(s3_data)
+
+    # Branch 1: OCR -> Bronze (can run in parallel)
     bronze_info = save_to_bronze(ocr_result)
+
+    # Branch 2: OCR -> Gemini -> Silver -> Supabase
     gemini_result = extract_structured_with_gemini(ocr_result)
     silver_info = save_to_silver(gemini_result)
-    _ = sync_to_supabase(silver_info)
-    log_result(bronze_info, silver_info)
+    supabase_info = sync_to_supabase(gemini_result)
+
+    # Final join after both branches are complete
+    log_result(bronze_info, silver_info, supabase_info)
 
 
 process_document_ocr()
