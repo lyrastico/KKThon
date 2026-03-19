@@ -99,8 +99,8 @@ with st.sidebar:
         st.caption(f"Connecté : {st.session_state.user_name}")
         page = option_menu(
             menu_title=None,
-            options=["Tableau de bord", "Liste clients", "Historique"],
-            icons=["house", "people", "archive"],
+            options=["Tableau de bord", "Liste clients"],
+            icons=["house", "people"],
             menu_icon="cast",
             default_index=0,
             styles=MENU_STYLES,
@@ -175,22 +175,135 @@ elif page == "Inscription":
                 except AuthServiceError as e:
                     st.error(str(e))
 # Redirection si non connecté
-elif page in ("Tableau de bord", "Liste clients", "Historique") and not st.session_state.logged_in:
+elif page in ("Tableau de bord", "Liste clients") and not st.session_state.logged_in:
     st.warning("Veuillez vous connecter pour accéder à cette page.")
     st.stop()
 
 elif page == "Tableau de bord":
     st.markdown(f"## Bienvenue {st.session_state.user_name}, voici vos statistiques")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Documents traités", "1 250", "↑ 12%")
-    col2.metric("Précision OCR", "98,4%", "Stable")
-    col3.metric("Temps gagné", "42h", "Ce mois")
+
+    token = st.session_state.access_token
+
+    fetch_errors = []
+    with st.spinner("Chargement des données..."):
+        try:
+            clients = list_clients(token, limit=200)
+        except ClientServiceError as e:
+            clients = []
+            fetch_errors.append(f"Clients : {e}")
+
+        all_files = []
+        for client in clients:
+            try:
+                files = list_files(token, client.client_id, limit=200)
+                all_files.extend(files)
+            except FileServiceError as e:
+                fetch_errors.append(f"Fichiers ({client.client_name}) : {e}")
+
+        all_reports = []
+        for client in clients:
+            try:
+                reports = api_list_reports(token, client.client_id, limit=200)
+                all_reports.extend(reports)
+            except ConformityReportServiceError as e:
+                fetch_errors.append(f"Rapports ({client.client_name}) : {e}")
+
+    for err in fetch_errors:
+        st.warning(f"Erreur de chargement — {err}")
+
+    # --- KPI metrics ---
+    total_clients = len(clients)
+    total_docs = len(all_files)
+    docs_done = sum(1 for f in all_files if f.processing_status == "done")
+    docs_pending = sum(1 for f in all_files if f.processing_status in ("pending", "processing"))
+    total_reports = len(all_reports)
+    reports_ok = sum(
+        1 for r in all_reports
+        if r.gold_content and r.gold_content.get("results", {}).get("status_global") == "pass"
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Clients", total_clients)
+    col2.metric("Documents importés", total_docs, f"{docs_pending} en attente" if docs_pending else None)
+    col3.metric("Documents traités", docs_done)
+    col4.metric("Rapports conformes", f"{reports_ok}/{total_reports}" if total_reports else "—")
+
     st.divider()
-    st.subheader("Volume de documents extraits")
-    df = pd.DataFrame({"Date": ["01/03", "05/03", "10/03", "15/03"], "Total": [120, 450, 300, 800]})
-    fig = px.area(df, x="Date", y="Total", color_discrete_sequence=["#3b82f6"])
-    fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=300, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig, use_container_width=True)
+
+    if all_files:
+        chart_col1, chart_col2 = st.columns(2)
+
+        with chart_col1:
+            st.subheader("Volume de documents par jour")
+            date_rows = []
+            for f in all_files:
+                if f.created_at:
+                    try:
+                        d = datetime.fromisoformat(f.created_at.replace("Z", "+00:00")).strftime("%d/%m/%Y")
+                        date_rows.append(d)
+                    except Exception:
+                        pass
+            if date_rows:
+                df_dates = pd.DataFrame({"Date": date_rows})
+                df_dates = df_dates["Date"].value_counts().reset_index()
+                df_dates.columns = ["Date", "Total"]
+                df_dates = df_dates.sort_values("Date")
+                fig = px.area(df_dates, x="Date", y="Total", color_discrete_sequence=["#3b82f6"])
+                fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig, use_container_width=True)
+
+        with chart_col2:
+            st.subheader("Répartition par type de document")
+            type_rows = [f.type if f.type else "Inconnu" for f in all_files]
+            df_types = pd.DataFrame({"Type": type_rows})
+            df_types = df_types["Type"].value_counts().reset_index()
+            df_types.columns = ["Type", "Nombre"]
+            fig2 = px.pie(df_types, names="Type", values="Nombre", color_discrete_sequence=px.colors.qualitative.Set3)
+            fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=280, paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.divider()
+
+        st.subheader("Statut de traitement")
+        status_map = {"done": "Traité", "pending": "En attente", "processing": "En cours", "error": "Erreur"}
+        status_colors = {"Traité": "#10b981", "En attente": "#f59e0b", "En cours": "#3b82f6", "Erreur": "#ef4444", "Inconnu": "#94a3b8"}
+        status_rows = [status_map.get(f.processing_status, "Inconnu") for f in all_files]
+        df_status = pd.DataFrame({"Statut": status_rows})
+        df_status = df_status["Statut"].value_counts().reset_index()
+        df_status.columns = ["Statut", "Nombre"]
+        fig3 = px.bar(
+            df_status, x="Statut", y="Nombre",
+            color="Statut",
+            color_discrete_map=status_colors,
+        )
+        fig3.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=250, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
+        st.plotly_chart(fig3, use_container_width=True)
+
+        st.divider()
+
+        st.subheader("Activité récente")
+        client_map = {str(c.client_id): c.client_name for c in clients}
+        recent_files = sorted(all_files, key=lambda f: f.created_at or "", reverse=True)[:10]
+        rows = []
+        for f in recent_files:
+            try:
+                date_str = datetime.fromisoformat(f.created_at.replace("Z", "+00:00")).strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                date_str = f.created_at or "—"
+            rows.append({
+                "Fichier": f.original_filename,
+                "Type": f.type or "—",
+                "Client": client_map.get(str(f.client_id), "—"),
+                "Statut": status_map.get(f.processing_status, f.processing_status),
+                "Date": date_str,
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    else:
+        if total_clients == 0:
+            st.info("Aucun client trouvé. Ajoutez des clients et importez des documents pour voir vos statistiques.")
+        else:
+            st.info(f"Aucun document trouvé pour vos {total_clients} client(s). Importez des documents depuis la page «\u202fListe clients\u202f».")
 
 elif page == "Liste clients":
     # -- Vue détaillée File --
@@ -271,7 +384,7 @@ elif page == "Liste clients":
             st.markdown(
                 f'<div style="display:flex;flex-direction:column;gap:6px;padding:10px 0">'
                 f'<div>{_badge("Conformes", "#166534")} &nbsp;<strong>{n_pass}</strong></div>'
-                f'<div>{_badge("Avertissements", "#92400e")} &nbsp;<strong>{n_warning}</strong></div>'
+                f'<div>{_badge("Avertissements", "#e18c58")} &nbsp;<strong>{n_warning}</strong></div>'
                 f'<div>{_badge("Échecs", "#991b1b")} &nbsp;<strong>{n_fail}</strong></div>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -595,13 +708,3 @@ elif page == "Liste clients":
                     except ClientServiceError as e:
                         st.error(str(e))
 
-elif page == "Historique":
-    st.markdown("## Explorateur de données")
-    st.write("Consultez ici les données structurées extraites de vos documents.")
-    df_history = pd.DataFrame({
-        "Date Import": ["16/03/2026", "15/03/2026", "14/03/2026"],
-        "Nom du Fichier": ["Facture_EDF.pdf", "Note_Frais_01.jpg", "Contrat_Bail.pdf"],
-        "Confiance": ["99%", "94%", "97%"],
-        "Statut": ["Validé", "Validé", "A vérifier"],
-    })
-    st.dataframe(df_history, use_container_width=True, hide_index=True)
