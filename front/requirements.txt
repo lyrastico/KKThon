@@ -1,0 +1,8 @@
+streamlit
+streamlit-option-menu
+pandas
+polars
+pyarrow
+plotly
+requests
+python-dotenv

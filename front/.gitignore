@@ -1,5 +1,5 @@
+.env
 gen-lang-client-0690325988-81883e510a60.json
-.cursor
 
 __pycache__/
 *.pyc
@@ -10,5 +10,3 @@ __pycache__/
 .Python
 .venv/
 *.egg-info/
-
-.env
