@@ -220,6 +220,23 @@ elif page == "Liste clients":
         except Exception:
             pass
 
+        _DETAIL_KEY_FR = {
+            "expected": "Attendu", "found": "Trouvé", "actual": "Valeur actuelle",
+            "message": "Message", "field": "Champ", "value": "Valeur",
+            "rule": "Règle", "document": "Document", "type": "Type",
+            "status": "Statut", "error": "Erreur", "description": "Description",
+            "source": "Source", "target": "Cible", "count": "Nombre",
+            "min": "Minimum", "max": "Maximum", "threshold": "Seuil",
+            "score": "Score", "confidence": "Confiance",
+        }
+
+        def _badge(text, bg, color="#fff"):
+            return (
+                f'<span style="background:{bg};color:{color};padding:3px 10px;'
+                f'border-radius:4px;font-size:12px;font-weight:600;'
+                f'letter-spacing:.4px">{text}</span>'
+            )
+
         # --- Header ---
         st.markdown("## Rapport de conformité")
         st.caption(
@@ -229,65 +246,83 @@ elif page == "Liste clients":
         )
         st.divider()
 
-        # --- Global verdict (prominent) ---
         _VERDICT = {
-            "pass":    ("🟢", "Conforme",      "success", "Tous les contrôles automatiques ont été passés avec succès."),
-            "fail":    ("🔴", "Non conforme",   "error",   "Un ou plusieurs contrôles ont échoué. Consultez le détail ci-dessous."),
-            "unknown": ("⚪", "Indéterminé",    "warning", "Aucun fichier traité disponible pour générer une analyse."),
+            "pass":    ("#166534", "#dcfce7", "Conforme",    "success", "Tous les contrôles automatiques ont été passés avec succès."),
+            "fail":    ("#991b1b", "#fee2e2", "Non conforme","error",   "Un ou plusieurs contrôles ont échoué. Consultez le détail ci-dessous."),
+            "unknown": ("#713f12", "#fef9c3", "Indéterminé", "warning", "Aucun fichier traité disponible pour générer une analyse."),
         }
-        v_icon, v_label, v_type, v_desc = _VERDICT.get(status_global, _VERDICT["unknown"])
+        v_fg, v_bg, v_label, v_type, v_desc = _VERDICT.get(status_global, _VERDICT["unknown"])
 
-        col_verdict, col_counts = st.columns([2, 1])
+        n_pass    = sum(1 for c in checks if c["status"] == "pass")
+        n_warning = sum(1 for c in checks if c["status"] == "warning")
+        n_fail    = sum(1 for c in checks if c["status"] == "fail")
+
+        col_verdict, col_counts = st.columns([3, 2])
         with col_verdict:
-            getattr(st, v_type)(f"**{v_icon} {v_label}** — {v_desc}")
-        with col_counts:
-            n_pass    = sum(1 for c in checks if c["status"] == "pass")
-            n_warning = sum(1 for c in checks if c["status"] == "warning")
-            n_fail    = sum(1 for c in checks if c["status"] == "fail")
             st.markdown(
-                f"✅ **{n_pass}** conforme(s) &nbsp;&nbsp; "
-                f"⚠️ **{n_warning}** avertissement(s) &nbsp;&nbsp; "
-                f"❌ **{n_fail}** échec(s)",
+                f'<div style="background:{v_bg};border-left:4px solid {v_fg};'
+                f'padding:14px 18px;border-radius:6px">'
+                f'<p style="margin:0;font-size:18px;font-weight:700;color:{v_fg}">{v_label}</p>'
+                f'<p style="margin:4px 0 0;font-size:13px;color:#374151">{v_desc}</p>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with col_counts:
+            st.markdown(
+                f'<div style="display:flex;flex-direction:column;gap:6px;padding:10px 0">'
+                f'<div>{_badge("Conformes", "#166534")} &nbsp;<strong>{n_pass}</strong></div>'
+                f'<div>{_badge("Avertissements", "#92400e")} &nbsp;<strong>{n_warning}</strong></div>'
+                f'<div>{_badge("Échecs", "#991b1b")} &nbsp;<strong>{n_fail}</strong></div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
         st.divider()
 
-        # --- Checks detail ---
+        # --- Détail des contrôles ---
         if checks:
             st.subheader("Détail des contrôles")
             st.caption("Chaque ligne représente une règle métier appliquée automatiquement sur vos documents.")
 
-            _ICON  = {"pass": "✅", "fail": "❌", "warning": "⚠️"}
-            _LABEL = {"pass": "OK", "fail": "Échec", "warning": "Attention"}
+            _STATUS_STYLE = {
+                "pass":    ("#166534", "#dcfce7", "Conforme"),
+                "fail":    ("#991b1b", "#fee2e2", "Échec"),
+                "warning": ("#92400e", "#fef3c7", "Attention"),
+            }
 
             for c in checks:
-                icon  = _ICON.get(c["status"], "-")
-                label = _LABEL.get(c["status"], c["status"])
+                fg, bg, lbl = _STATUS_STYLE.get(c["status"], ("#374151", "#f3f4f6", c["status"]))
                 details = c.get("details", {})
 
-                with st.container():
-                    col_icon, col_body, col_detail = st.columns([0.4, 4, 3])
-                    col_icon.markdown(f"## {icon}")
-                    with col_body:
-                        st.markdown(f"**{c['label']}**")
-                        st.caption(f"Code : `{c['code']}`  ·  Résultat : **{label}**")
-                    with col_detail:
-                        if details:
-                            for k, v in details.items():
-                                st.caption(f"{k.replace('_', ' ').capitalize()} : **{v}**")
-                    st.divider()
+                col_body, col_badge, col_detail = st.columns([4, 1.2, 3])
+                with col_body:
+                    st.markdown(f"**{c['label']}**")
+                    st.caption(f"Code : `{c['code']}`")
+                with col_badge:
+                    st.markdown(_badge(lbl, bg, fg), unsafe_allow_html=True)
+                with col_detail:
+                    if details:
+                        for k, v in details.items():
+                            label_fr = _DETAIL_KEY_FR.get(k, k.replace("_", " ").capitalize())
+                            st.caption(f"{label_fr} : **{v}**")
+                st.divider()
 
         # --- Documents manquants ---
         if missing:
             st.subheader("Documents manquants")
             st.caption("Ces types de documents n'ont pas été fournis. Certains contrôles n'ont pas pu être effectués.")
-            cols = st.columns(len(missing))
-            for col, doc in zip(cols, missing):
-                col.warning(f"📄 {doc}")
+            st.markdown(
+                "".join(
+                    f'<span style="display:inline-block;margin:4px 6px 4px 0;'
+                    f'background:#fef3c7;color:#92400e;padding:4px 12px;'
+                    f'border-radius:4px;font-size:13px">{doc}</span>'
+                    for doc in missing
+                ),
+                unsafe_allow_html=True,
+            )
             st.divider()
 
-        # --- Erreurs d'analyses ---
+        # --- Erreurs d'analyse ---
         if errors:
             st.subheader("Problèmes détectés lors de l'analyse")
             st.caption("Ces erreurs techniques ont empêché certains contrôles de s'exécuter.")
@@ -295,16 +330,19 @@ elif page == "Liste clients":
                 st.error(err)
             st.divider()
 
-        # --- Source files ---
+        # --- Fichiers sources ---
         if source_files:
             with st.expander(f"Fichiers utilisés pour ce rapport ({len(source_files)})", expanded=False):
                 st.caption("Liste des fichiers dont le traitement était terminé au moment de la génération.")
-                for sf in source_files:
-                    st.markdown(
-                        f"- **Type** : {sf.get('type') or 'inconnu'}  ·  "
-                        f"**ID** : `{sf.get('file_id', '-')}`  ·  "
-                        f"**S3** : `{sf.get('s3_raw_path', '-')}`"
-                    )
+                rows = [
+                    {
+                        "Type": sf.get("type") or "inconnu",
+                        "Identifiant": sf.get("file_id", "-"),
+                        "Chemin S3": sf.get("s3_raw_path", "-"),
+                    }
+                    for sf in source_files
+                ]
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     # -- File detail view --
     elif st.session_state.selected_file is not None:
@@ -416,7 +454,6 @@ elif page == "Liste clients":
         st.divider()
 
         # File list section
-        st.subheader("Documents du client")
         try:
             files = list_files(st.session_state.access_token, client_id)
         except FileServiceError as e:
@@ -450,22 +487,40 @@ elif page == "Liste clients":
                     st.error(str(e))
 
         if reports:
-            _status_icon = {"pass": "🟢", "fail": "🔴", "unknown": "⚪", "error": "🔴", "done": "🟢"}
+            _report_status_label = {
+                "pass": "Conforme", "fail": "Non conforme",
+                "unknown": "Indéterminé", "error": "Erreur", "done": "Terminé",
+            }
+            _report_status_style = {
+                "pass":    ("#166534", "#dcfce7"),
+                "fail":    ("#991b1b", "#fee2e2"),
+                "unknown": ("#374151", "#f3f4f6"),
+                "error":   ("#991b1b", "#fee2e2"),
+                "done":    ("#166534", "#dcfce7"),
+            }
+
+            def _status_badge(s):
+                lbl = _report_status_label.get(s, s)
+                fg, bg = _report_status_style.get(s, ("#374151", "#f3f4f6"))
+                return (
+                    f'<span style="background:{bg};color:{fg};padding:3px 10px;'
+                    f'border-radius:4px;font-size:12px;font-weight:600">{lbl}</span>'
+                )
+
             for r in sorted(reports, key=lambda x: x.created_at, reverse=True):
                 status_global = (r.gold_content or {}).get("results", {}).get("status_global", r.processing_status)
-                icon = _status_icon.get(status_global, "⚪")
                 try:
                     created = datetime.fromisoformat(r.created_at).strftime("%d/%m/%Y %H:%M")
                 except Exception:
                     created = r.created_at
 
-                col_date, col_status, col_open, col_del = st.columns([3, 2, 0.5, 0.5])
+                col_date, col_status, col_open, col_del = st.columns([3, 2, 1, 1])
                 col_date.write(created)
-                col_status.caption(f"{icon} {status_global}")
-                if col_open.button("👁", key=f"open_report_{r.report_id}", help="Voir le rapport"):
+                col_status.markdown(_status_badge(status_global), unsafe_allow_html=True)
+                if col_open.button("Voir", key=f"open_report_{r.report_id}"):
                     st.session_state.selected_report = str(r.report_id)
                     st.rerun()
-                if col_del.button("🗑", key=f"del_report_{r.report_id}", help="Supprimer le rapport"):
+                if col_del.button("Supprimer", key=f"del_report_{r.report_id}"):
                     try:
                         api_delete_report(st.session_state.access_token, r.report_id)
                         st.rerun()
