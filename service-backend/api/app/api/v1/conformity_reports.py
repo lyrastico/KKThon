@@ -102,7 +102,7 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "code": "SIREN_FACTURE",
                 "label": "Cohérence SIREN Facture vs Kbis",
                 "status": "pass" if f_siren == siren_ref else "fail",
-                "details": {"found": f_siren, "expected": siren_ref}
+                "details": {"Trouvé": f_siren, "Attendu": siren_ref}
             })
 
         # Comparaison SIREN Devis
@@ -112,7 +112,7 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "code": "SIREN_DEVIS",
                 "label": "Cohérence SIREN Devis vs Kbis",
                 "status": "pass" if d_siren == siren_ref else "fail",
-                "details": {"found": d_siren, "expected": siren_ref}
+                "details": {"Trouvé": d_siren, "Attendu": siren_ref}
             })
 
         # Comparaison SIREN Attestations (Vérifie si au moins une est valide)
@@ -122,7 +122,7 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "code": "SIREN_ATTESTATION",
                 "label": "Cohérence SIREN Attestations vs Kbis",
                 "status": "pass" if att_ok else "fail",
-                "details": {"expected": siren_ref, "count_analyzed": len(attestations)}
+                "details": {"Attendu": siren_ref, "Nombre analysé": len(attestations)}
             })
 
     # B. IBAN Match (Facture vs RIB)
@@ -148,7 +148,7 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
             "code": "AMOUNT_CHECK",
             "label": "Écart montant Facture/Devis < 5%",
             "status": "pass" if diff <= 0.05 else "warning",
-            "details": {"diff_percent": round(diff * 100, 2), "invoice": mt_f, "quote": mt_d}
+            "details": {"Ecart": round(diff * 100, 2), "Facture": mt_f, "Devis": mt_d}
         })
 
     # D. Dates (Antériorité du devis)
@@ -160,7 +160,7 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "code": "DATE_ORDER",
                 "label": "Antériorité du Devis sur la Facture",
                 "status": "pass" if date_d <= date_f else "warning",
-                "details": {"quote_date": date_d, "invoice_date": date_f}
+                "details": {"Date du Devis": date_d, "Date de la Facture": date_f}
             })
 
     # Calcul du statut global
