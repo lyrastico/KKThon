@@ -36,13 +36,13 @@ async def _client_owned(db, client_id: UUID, current_user):
 
 async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
     """
-    Génère le contenu Gold complet selon la spec :
-    - Meta, Results (checks, missing, errors), Traceability.
+    Génère le contenu Gold complet en extrayant les données depuis la structure :
+    silver_content -> result -> data
     """
     docs = {}
     source_files_meta = []
     
-    # 1. Sourcing : Filtrage 'done' et Snapshot des sources
+    # 1. Sourcing : Filtrage 'done' et extraction des données
     for f in files:
         if f.processing_status == "done":
             source_files_meta.append({
@@ -51,17 +51,26 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "s3_raw_path": getattr(f, 's3_raw_path', None),
                 "s3_silver_path": getattr(f, 's3_silver_path', None)
             })
-            # Extraction du contenu silver
-            content = f.silver_content.get("data", {}) if isinstance(f.silver_content, dict) else (f.silver_content or {})
-            docs[f.type.lower()] = content
+            
+            # --- CORRECTION DE LA STRUCTURE JSON ---
+            # On récupère le contenu silver (doit être un dict)
+            silver = f.silver_content if isinstance(f.silver_content, dict) else {}
+            
+            # Ton JSON a une structure : {"result": {"data": {...}}}
+            # On vérifie d'abord "result", sinon on cherche "data" directement
+            if "result" in silver and isinstance(silver["result"], dict):
+                content = silver["result"].get("data", {})
+            else:
+                content = silver.get("data", {})
+            
+            # Stockage avec le type en minuscule pour faciliter les tests (ex: 'kbis')
+            if f.type:
+                docs[f.type.lower()] = content
 
     # --- LOGS DE RÉCUPÉRATION ---
     found_types = list(docs.keys())
-    logger.info(f"[GOLD-GEN] Client {client_id}: {len(source_files_meta)} fichiers 'done' récupérés.")
-    logger.info(f"[GOLD-GEN] Types de documents identifiés: {found_types}")
-
-    if not docs:
-        logger.warning(f"[GOLD-GEN] Aucun contenu exploitable (silver_content) pour le client {client_id}")
+    logger.info(f"[GOLD-GEN] Client {client_id}: {len(source_files_meta)} fichiers 'done' analysés.")
+    logger.info(f"[GOLD-GEN] Types de documents chargés: {found_types}")
 
     checks = []
     missing_docs = []
@@ -69,21 +78,24 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
 
     # --- RÈGLES MÉTIER ---
 
-    # A. Pivot SIREN (KBIS obligatoire pour comparer)
+    # A. Pivot SIREN (Extraction depuis le Kbis chargé)
     kbis_data = docs.get('kbis', {})
     siren_ref = str(kbis_data.get('siren', "")).replace(" ", "").strip()
     
     if not siren_ref:
-        msg = "SIREN de référence introuvable dans le KBIS (ou KBIS manquant)."
+        msg = "SIREN de référence introuvable dans le KBIS (Données absentes ou structure incorrecte)."
         logger.error(f"[GOLD-GEN] {msg} pour client {client_id}")
         errors.append(msg)
+    else:
+        logger.info(f"[GOLD-GEN] SIREN de référence trouvé: {siren_ref}")
 
+    # Comparaison SIREN sur les autres docs
     for t in ['facture', 'devis', 'attestation']:
         if t in docs:
             val = str(docs[t].get('siren', "")).replace(" ", "").strip()
             is_ok = (val == siren_ref and val != "")
             
-            logger.debug(f"[GOLD-GEN] Check SIREN {t}: Found='{val}', Expected='{siren_ref}'")
+            logger.debug(f"[GOLD-GEN] Check SIREN {t}: Trouvé='{val}', Attendu='{siren_ref}'")
             
             checks.append({
                 "code": f"SIREN_{t.upper()}",
@@ -100,8 +112,6 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
         iban_r = str(docs['rib'].get('iban', "")).replace(" ", "").upper()
         is_iban_ok = (iban_f == iban_r and iban_f != "")
         
-        logger.debug(f"[GOLD-GEN] Check IBAN: Match={is_iban_ok}")
-        
         checks.append({
             "code": "IBAN_MATCH",
             "label": "IBAN Facture conforme au RIB",
@@ -116,8 +126,6 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
             mt_d = float(docs['devis'].get('amount_ttc', 0))
             diff = abs(mt_f - mt_d) / mt_d if mt_d > 0 else 1
             
-            logger.debug(f"[GOLD-GEN] Check Montants: Facture={mt_f}, Devis={mt_d}, Diff={round(diff*100, 2)}%")
-            
             checks.append({
                 "code": "AMOUNT_CHECK",
                 "label": "Écart montant Facture/Devis < 5%",
@@ -125,20 +133,16 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "details": {"diff_percent": round(diff * 100, 2), "invoice": mt_f, "quote": mt_d}
             })
         except Exception as e:
-            err_msg = f"Erreur calcul montants: {str(e)}"
-            logger.error(f"[GOLD-GEN] {err_msg}")
-            errors.append(err_msg)
+            errors.append(f"Erreur calcul montants: {str(e)}")
 
     # D. Dates (Antériorité)
     if 'facture' in docs and 'devis' in docs:
         df, dd = docs['facture'].get('date'), docs['devis'].get('date')
         if df and dd:
-            is_date_ok = dd <= df
-            logger.debug(f"[GOLD-GEN] Check Dates: Devis={dd} <= Facture={df} is {is_date_ok}")
             checks.append({
                 "code": "DATE_ORDER",
                 "label": "Antériorité du Devis sur la Facture",
-                "status": "pass" if is_date_ok else "warning",
+                "status": "pass" if dd <= df else "warning",
                 "details": {"quote_date": dd, "invoice_date": df}
             })
 
@@ -147,8 +151,6 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
     if not source_files_meta:
         status_global = "unknown"
         errors.append("Aucun fichier traité ('done') trouvé pour ce client.")
-
-    logger.info(f"[GOLD-GEN] Analyse terminée pour {client_id}. Statut global: {status_global}")
 
     return {
         "meta": {
@@ -179,17 +181,12 @@ async def create_report(
     if not await _client_owned(db, payload.client_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
 
-    # Récupération des fichiers du client
     files = await file_repo.list_files_for_client(db, payload.client_id)
-    
-    logger.info(f"Requête de création de rapport pour client: {payload.client_id}")
+    logger.info(f"Lancement génération rapport pour client: {payload.client_id}")
 
-    # Génération automatique du contenu Gold
     gold_content = await generate_gold_analysis(payload.client_id, files)
 
-    # Mode Dry Run
     if getattr(payload, 'dry_run', False):
-        logger.info(f"Mode Dry Run activé pour le client {payload.client_id}")
         return ConformityReportRead(
             id=UUID("00000000-0000-0000-0000-000000000000"),
             client_id=payload.client_id,
@@ -198,7 +195,6 @@ async def create_report(
             created_at=datetime.utcnow()
         )
 
-    # Déduction du statut technique
     final_status = "done"
     if not files or not gold_content["meta"]["source_files"]:
         final_status = "error"
