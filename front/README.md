@@ -20,7 +20,7 @@ Interface web de la plateforme de traitement automatisé de documents administra
 ```bash
 cd front
 python -m venv .venv
-source .venv/Scripts/activate  # Windows
+source .venv\Scripts\Activate.ps1  # Windows
 # source .venv/bin/activate    # macOS/Linux
 pip install -r requirements.txt
 ```
@@ -60,42 +60,46 @@ front/
 ## Fonctionnalités
 
 ### Authentification
+
 - Connexion / inscription
 - Gestion des tokens (access + refresh)
 - Réinitialisation de mot de passe
 
 ### Gestion des clients
+
 - Création, liste et suppression de clients
 - Upload de documents par client (PDF, PNG, JPG, JPEG)
 - Suivi en temps réel du traitement (OCR → analyse → disponibilité)
 - Visualisation des données extraites avec scores de confiance
 
 ### Rapports de conformité
+
 - Génération de rapports automatiques par client
 - Verdict global (pass / fail / inconnu)
 - Détail des contrôles : documents manquants, anomalies détectées, fichiers sources
 
 ### Tableau de bord
+
 - Métriques clés : documents traités, précision OCR, temps économisé
 - Graphique d'évolution du volume d'extraction
 
 ## Pages
 
-| Page | Description |
-|------|-------------|
-| Tableau de bord | Vue d'ensemble et statistiques |
-| Liste clients | Gestion des clients et de leurs documents |
-| Historique | Explorateur de données exportées |
+| Page            | Description                               |
+| --------------- | ----------------------------------------- |
+| Tableau de bord | Vue d'ensemble et statistiques            |
+| Liste clients   | Gestion des clients et de leurs documents |
+| Historique      | Explorateur de données exportées          |
 
 ## Endpoints API consommés
 
 Base URL : `API_BASE_URL/api/v1/`
 
-| Méthode | Route | Usage |
-|---------|-------|-------|
-| POST | `/auth/login` | Connexion |
-| POST | `/auth/register` | Inscription |
-| GET | `/auth/me` | Profil utilisateur |
-| GET/POST/DELETE | `/clients` | Gestion clients |
-| GET/POST/DELETE | `/files` | Gestion fichiers |
+| Méthode         | Route                 | Usage                  |
+| --------------- | --------------------- | ---------------------- |
+| POST            | `/auth/login`         | Connexion              |
+| POST            | `/auth/register`      | Inscription            |
+| GET             | `/auth/me`            | Profil utilisateur     |
+| GET/POST/DELETE | `/clients`            | Gestion clients        |
+| GET/POST/DELETE | `/files`              | Gestion fichiers       |
 | GET/POST/DELETE | `/conformity-reports` | Rapports de conformité |
