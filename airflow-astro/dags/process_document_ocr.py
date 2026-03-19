@@ -18,8 +18,8 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
-import os
 import re
+import urllib.parse
 from datetime import datetime as dt
 from pathlib import Path
 
@@ -372,23 +372,67 @@ def process_document_ocr():
             "silver_bucket": gemini_result["source"]["bucket"],
             "silver_key": silver_key,
             "size_bytes": len(json_bytes),
+            "s3_raw_path": gemini_result["source"]["key"],
+            "s3_silver_path": silver_key,
+            "silver_content": gemini_result,
+            "document_type": (gemini_result.get("result") or {}).get("document_detected"),
         }
 
     @task
-    def send_to_supabase_disabled(silver_info: dict) -> dict:
-        """Stub: keep Supabase wiring but disabled for now."""
-        enabled = os.getenv("ENABLE_SUPABASE", "false").lower() in {"1", "true", "yes", "y", "on"}
-        if not enabled:
-            print("Supabase export disabled (set ENABLE_SUPABASE=true to enable later).")
-            return {"supabase_enabled": False, **silver_info}
+    def sync_to_supabase(silver_info: dict) -> dict:
+        """Update `public.files` row matching `s3_raw_path` with silver results."""
+        import requests
 
         from airflow.hooks.base import BaseHook
 
         conn = BaseHook.get_connection(SUPABASE_CONN_ID)
         extra = conn.extra_dejson or {}
-        # URL/keys will be used once tables/schema are defined.
-        print(f"Supabase enabled, connection extra keys: {sorted(list(extra.keys()))}")
-        return {"supabase_enabled": True, **silver_info}
+
+        supabase_url = extra.get("SUPABASE_URL")
+        service_role_key = extra.get("SUPABASE_SERVICE_ROLE_KEY")
+        if not supabase_url or not service_role_key:
+            raise ValueError(
+                "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in connection extra for supabase_access"
+            )
+
+        s3_raw_path = silver_info.get("s3_raw_path")
+        if not s3_raw_path:
+            raise ValueError(f"Missing s3_raw_path in silver_info: {silver_info}")
+
+        # We patch (update) the existing row created by the backend on upload.
+        # If no row matches, we fail the task.
+        encoded_path = urllib.parse.quote(str(s3_raw_path), safe="")
+        endpoint = f"{supabase_url.rstrip('/')}/rest/v1/files?s3_raw_path=eq.{encoded_path}"
+
+        payload = {
+            "s3_silver_path": silver_info.get("s3_silver_path"),
+            "silver_content": silver_info.get("silver_content"),
+            "type": silver_info.get("document_type"),
+            "processing_status": "done",
+        }
+
+        headers = {
+            "apikey": service_role_key,
+            "Authorization": f"Bearer {service_role_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Return updated rows so we can detect missing match.
+            "Prefer": "return=representation",
+        }
+
+        resp = requests.patch(endpoint, headers=headers, json=payload, timeout=60)
+        if resp.status_code >= 300:
+            raise RuntimeError(f"Supabase PostgREST PATCH failed {resp.status_code}: {resp.text}")
+
+        updated = resp.json()
+        if not isinstance(updated, list) or len(updated) == 0:
+            # No row matched the filter -> fail as requested.
+            raise RuntimeError(
+                f"No Supabase row matched public.files.s3_raw_path={s3_raw_path!r} (cannot update)"
+            )
+
+        print(f"Updated Supabase files row for s3_raw_path={s3_raw_path}")
+        return {"supabase_updated": True, "updated_count": len(updated), **silver_info}
 
     @task
     def log_result(bronze_info: dict, silver_info: dict) -> dict:
@@ -409,7 +453,7 @@ def process_document_ocr():
     bronze_info = save_to_bronze(ocr_result)
     gemini_result = extract_structured_with_gemini(ocr_result)
     silver_info = save_to_silver(gemini_result)
-    _ = send_to_supabase_disabled(silver_info)
+    _ = sync_to_supabase(silver_info)
     log_result(bronze_info, silver_info)
 
 
