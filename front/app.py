@@ -9,13 +9,13 @@ import os
 from services.client_service import ClientServiceError, create_client, delete_client, list_clients
 from services.auth_service import login as api_login, register as api_register, AuthServiceError
 from services.file_service import FileServiceError, list_files, upload_file, delete_file, get_file
+from components.file_progress import render_files_section
 
 # --- 1. SETUP & THEME ---
 st.set_page_config(page_title="KKthon", layout="wide")
 
 
-# Restauration de session au chargement.
-# Le token est dans l'URL. (mauvaise manip pour un gros projet, mais fait l'affaire pour cet hakathon)
+# Session restoration from URL token.
 if "logged_in" not in st.session_state:
     session_token = st.query_params.get("session_token")
     if session_token:
@@ -182,7 +182,7 @@ elif page == "Tableau de bord":
     st.plotly_chart(fig, use_container_width=True)
 
 elif page == "Liste clients":
-    # -- File detail view --
+    # -- Vue détaillée File --
     if st.session_state.selected_file is not None:
         if st.button("← Retour aux documents"):
             st.session_state.selected_file = None
@@ -213,6 +213,7 @@ elif page == "Liste clients":
 
             st.divider()
 
+            # Extracted data block
             st.subheader("Données extraites")
             data = result.get("data", {})
             conf = result.get("confidence_score")
@@ -231,6 +232,7 @@ elif page == "Liste clients":
 
             st.divider()
 
+            # Source and processing metadata
             col_src, col_proc = st.columns(2)
             with col_src:
                 st.subheader("Source")
@@ -292,7 +294,6 @@ elif page == "Liste clients":
         st.divider()
 
         # File list section
-        st.subheader("Documents du client")
         try:
             files = list_files(st.session_state.access_token, client_id)
         except FileServiceError as e:
@@ -302,65 +303,7 @@ elif page == "Liste clients":
         if not files:
             st.info("Aucun document pour ce client.")
         else:
-            pending = [f for f in files if f.processing_status != "done"]
-            if pending:
-                st.info(f"Traitement en cours... ({len(pending)} fichier(s) en attente)")
-                st.progress((len(files) - len(pending)) / len(files))
-
-            def _elapsed(created_at: str, updated_at: str, is_done: bool) -> str:
-                """For done files: duration between creation and completion.
-                For pending files: time elapsed since creation."""
-                try:
-                    created = datetime.fromisoformat(created_at)
-                    end = datetime.fromisoformat(updated_at) if is_done else datetime.now(tz=created.tzinfo)
-                    delta = int((end - created).total_seconds())
-                    if delta < 60:
-                        return f"{delta}s"
-                    if delta < 3600:
-                        return f"{delta // 60}m {delta % 60}s"
-                    return f"{delta // 3600}h {(delta % 3600) // 60}m"
-                except Exception:
-                    return "-"
-
-            hcols = st.columns([3, 1.5, 1.5, 1, 2, 1.5, 1, 1])
-            for col, label in zip(hcols, ["Nom", "Type", "Format", "Statut", "Créé le", "Durée", "Ouvrir", "Supprimer"]):
-                col.markdown(f"**{label}**")
-            st.divider()
-
-            for f in files:
-                is_done = f.processing_status == "done"
-                created_str = (
-                    datetime.fromisoformat(f.created_at).strftime("%d/%m/%Y %H:%M")
-                    if f.created_at else "-"
-                )
-                elapsed = _elapsed(f.created_at, f.updated_at, is_done)
-
-                col_name, col_type, col_fmt, col_status, col_date, col_elapsed, col_open, col_del = st.columns([3, 1.5, 1.5, 1, 2, 1.5, 1, 1])
-                col_name.write(f.original_filename)
-                col_type.caption(f.type or "-")
-                col_fmt.caption(f.file_format or "-")
-                col_status.caption(f.processing_status)
-                col_date.caption(created_str)
-                col_elapsed.caption(elapsed)
-
-                if is_done:
-                    if col_open.button("Ouvrir", key=f"open_file_{f.file_id}"):
-                        st.session_state.selected_file = str(f.file_id)
-                        st.rerun()
-                else:
-                    col_open.caption("-")
-
-                if col_del.button("Sup.", key=f"del_file_{f.file_id}"):
-                    try:
-                        delete_file(st.session_state.access_token, f.file_id)
-                        st.success(f"Fichier {f.original_filename} supprimé.")
-                        st.rerun()
-                    except FileServiceError as e:
-                        st.error(str(e))
-
-            if pending:
-                time.sleep(4)
-                st.rerun()
+            render_files_section(files, st.session_state.access_token)
 
     # -- Client list view --
     else:
@@ -427,7 +370,6 @@ elif page == "Liste clients":
                         st.rerun()
                     except ClientServiceError as e:
                         st.error(str(e))
-
 
 elif page == "Historique":
     st.markdown("## Explorateur de données")
