@@ -84,7 +84,8 @@ for each row
 execute function public.set_updated_at();
 
 -- -----------------------------------------------------------------------------
--- files (raw S3 : raw/<sha256>.<ext> — Airflow complète type, silver, statut…)
+-- files (raw S3 : raw/<sha256>.<ext>, hash salé à la date courante)
+-- Airflow complète type, silver, statut…
 -- -----------------------------------------------------------------------------
 create table if not exists public.files (
   file_id uuid primary key default gen_random_uuid(),

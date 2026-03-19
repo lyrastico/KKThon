@@ -1,5 +1,6 @@
 import hashlib
 import mimetypes
+from datetime import datetime, timezone
 from pathlib import Path
 
 import boto3
@@ -15,8 +16,14 @@ def _s3_client():
     return boto3.client("s3", **kwargs)
 
 
-def sha256_hex(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
+def sha256_hex(content: bytes, now_utc: datetime | None = None) -> str:
+    """
+    Build a time-salted hash from file bytes.
+    Two identical files uploaded at different times produce different keys.
+    """
+    ts = (now_utc or datetime.now(timezone.utc)).isoformat(timespec="milliseconds")
+    payload = ts.encode("utf-8") + b":" + content
+    return hashlib.sha256(payload).hexdigest()
 
 
 def guess_extension(filename: str | None, content_type: str | None) -> str:

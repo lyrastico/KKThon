@@ -77,7 +77,7 @@ Sans cette clé, l’endpoint register renvoie `503`.
 
 | Méthode | Route | Description |
 |---------|--------|-------------|
-| POST | `/api/v1/files/upload` | **Multipart** : `client_id` (form) + `file`. Hash SHA-256 → clé S3 `raw/<sha256>.<ext>`, ligne `files` en `pending`. Idempotence : même contenu = même clé = même ligne (retour existant). |
+| POST | `/api/v1/files/upload` | **Multipart** : `client_id` (form) + `file`. Hash SHA-256 salé avec la date/heure courante → clé S3 `raw/<sha256>.<ext>`, ligne `files` en `pending`. Deux uploads d'un même fichier à des instants différents génèrent des clés différentes. |
 | GET | `/api/v1/files?client_id=...` | Liste par client |
 | POST | `/api/v1/files` | Création manuelle si fichier déjà sur S3 |
 | GET | `/api/v1/files/{file_id}` | Détail |
