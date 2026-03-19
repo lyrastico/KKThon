@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 from datetime import datetime
 from typing import Optional
@@ -14,6 +15,9 @@ from app.schemas.conformity_report import (
 import app.repositories.client as client_repo
 import app.repositories.conformity_report as report_repo
 import app.repositories.file as file_repo
+
+# Configuration du logger
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/conformity-reports", tags=["conformity-reports"])
 
@@ -47,9 +51,17 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "s3_raw_path": getattr(f, 's3_raw_path', None),
                 "s3_silver_path": getattr(f, 's3_silver_path', None)
             })
-            # Extraction du contenu silver (on supporte {'data': {...}} ou le dict direct)
+            # Extraction du contenu silver
             content = f.silver_content.get("data", {}) if isinstance(f.silver_content, dict) else (f.silver_content or {})
             docs[f.type.lower()] = content
+
+    # --- LOGS DE RÉCUPÉRATION ---
+    found_types = list(docs.keys())
+    logger.info(f"[GOLD-GEN] Client {client_id}: {len(source_files_meta)} fichiers 'done' récupérés.")
+    logger.info(f"[GOLD-GEN] Types de documents identifiés: {found_types}")
+
+    if not docs:
+        logger.warning(f"[GOLD-GEN] Aucun contenu exploitable (silver_content) pour le client {client_id}")
 
     checks = []
     missing_docs = []
@@ -62,12 +74,17 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
     siren_ref = str(kbis_data.get('siren', "")).replace(" ", "").strip()
     
     if not siren_ref:
-        errors.append("SIREN de référence introuvable dans le KBIS (ou KBIS manquant).")
+        msg = "SIREN de référence introuvable dans le KBIS (ou KBIS manquant)."
+        logger.error(f"[GOLD-GEN] {msg} pour client {client_id}")
+        errors.append(msg)
 
     for t in ['facture', 'devis', 'attestation']:
         if t in docs:
             val = str(docs[t].get('siren', "")).replace(" ", "").strip()
             is_ok = (val == siren_ref and val != "")
+            
+            logger.debug(f"[GOLD-GEN] Check SIREN {t}: Found='{val}', Expected='{siren_ref}'")
+            
             checks.append({
                 "code": f"SIREN_{t.upper()}",
                 "label": f"Cohérence SIREN {t.capitalize()} vs Kbis",
@@ -82,6 +99,9 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
         iban_f = str(docs['facture'].get('iban', "")).replace(" ", "").upper()
         iban_r = str(docs['rib'].get('iban', "")).replace(" ", "").upper()
         is_iban_ok = (iban_f == iban_r and iban_f != "")
+        
+        logger.debug(f"[GOLD-GEN] Check IBAN: Match={is_iban_ok}")
+        
         checks.append({
             "code": "IBAN_MATCH",
             "label": "IBAN Facture conforme au RIB",
@@ -95,6 +115,9 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
             mt_f = float(docs['facture'].get('amount_ttc', 0))
             mt_d = float(docs['devis'].get('amount_ttc', 0))
             diff = abs(mt_f - mt_d) / mt_d if mt_d > 0 else 1
+            
+            logger.debug(f"[GOLD-GEN] Check Montants: Facture={mt_f}, Devis={mt_d}, Diff={round(diff*100, 2)}%")
+            
             checks.append({
                 "code": "AMOUNT_CHECK",
                 "label": "Écart montant Facture/Devis < 5%",
@@ -102,16 +125,20 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "details": {"diff_percent": round(diff * 100, 2), "invoice": mt_f, "quote": mt_d}
             })
         except Exception as e:
-            errors.append(f"Erreur calcul montants: {str(e)}")
+            err_msg = f"Erreur calcul montants: {str(e)}"
+            logger.error(f"[GOLD-GEN] {err_msg}")
+            errors.append(err_msg)
 
     # D. Dates (Antériorité)
     if 'facture' in docs and 'devis' in docs:
         df, dd = docs['facture'].get('date'), docs['devis'].get('date')
         if df and dd:
+            is_date_ok = dd <= df
+            logger.debug(f"[GOLD-GEN] Check Dates: Devis={dd} <= Facture={df} is {is_date_ok}")
             checks.append({
                 "code": "DATE_ORDER",
                 "label": "Antériorité du Devis sur la Facture",
-                "status": "pass" if dd <= df else "warning",
+                "status": "pass" if is_date_ok else "warning",
                 "details": {"quote_date": dd, "invoice_date": df}
             })
 
@@ -120,6 +147,8 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
     if not source_files_meta:
         status_global = "unknown"
         errors.append("Aucun fichier traité ('done') trouvé pour ce client.")
+
+    logger.info(f"[GOLD-GEN] Analyse terminée pour {client_id}. Statut global: {status_global}")
 
     return {
         "meta": {
@@ -145,25 +174,22 @@ async def create_report(
     current_user=Depends(get_current_user),
 ):
     """
-    POST /conformity-reports
     Génère un rapport Gold basé sur les fichiers Silver existants.
     """
-    # 1. Vérification Propriété
     if not await _client_owned(db, payload.client_id, current_user):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
 
-    # 2. Force : Optionnel (gestion de la suppression si nécessaire)
-    # if payload.force:
-    #     await report_repo.delete_reports_for_client(db, payload.client_id)
-
-    # 3. Récupération des fichiers du client
+    # Récupération des fichiers du client
     files = await file_repo.list_files_for_client(db, payload.client_id)
+    
+    logger.info(f"Requête de création de rapport pour client: {payload.client_id}")
 
-    # 4. Génération automatique du contenu Gold (Logique métier)
+    # Génération automatique du contenu Gold
     gold_content = await generate_gold_analysis(payload.client_id, files)
 
-    # 5. Mode Dry Run : On renvoie le calcul sans sauver
+    # Mode Dry Run
     if getattr(payload, 'dry_run', False):
+        logger.info(f"Mode Dry Run activé pour le client {payload.client_id}")
         return ConformityReportRead(
             id=UUID("00000000-0000-0000-0000-000000000000"),
             client_id=payload.client_id,
@@ -172,12 +198,11 @@ async def create_report(
             created_at=datetime.utcnow()
         )
 
-    # 6. Déduction du statut technique (done par défaut si le process tourne)
+    # Déduction du statut technique
     final_status = "done"
     if not files or not gold_content["meta"]["source_files"]:
         final_status = "error"
 
-    # 7. Création en base (silver_content reste NULL)
     return await report_repo.create_report(
         db,
         client_id=payload.client_id,
