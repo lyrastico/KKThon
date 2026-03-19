@@ -1,308 +1,190 @@
-# SUJET DU PROJET
+# KKThon
+
+Plateforme de traitement automatique de documents administratifs (OCR + structuration + conformité).
+
+## Vision (ce que le projet fait)
+
+- Upload multi-documents (pièces comptables sensibles) côté utilisateur.
+- Classification automatique (facture, devis, attestation, etc.) et extraction d'informations clés (SIREN/SIRET, montants, dates, IBAN...).
+- Vérification “intelligente” et détection d'incohérences entre les documents d'un même client (avec une validation externe du SIREN).
+- Stockage selon une logique Data Lake (Medallion) : `raw/` (brut), `bronze/` (OCR), `silver/` (LLM), et un résultat de conformité (“gold analysis”) stocké côté applicatif.
+
+## Architecture (gros blocs)
+
+Le projet est organisé en 3 composants :
+
+1. `service-backend/`
+   - API métier en **FastAPI**
+   - Auth **Supabase**
+   - Persistance **Postgres (Supabase)** + métadonnées fichiers/rapports
+   - Upload des documents vers **AWS S3** dans la zone `raw/`
+   - Génération du **gold analysis** (rapport de conformité) à partir des fichiers OCR traités
+
+2. `airflow-astro/`
+   - Orchestration event-driven via **Apache Airflow (Astronomer)**
+   - DAG `process_document_ocr` :
+     - `raw/` -> OCR (Google Document AI) -> `bronze/`
+     - OCR text -> extraction structurée (Gemini) -> `silver/`
+     - Mise à jour de la table Supabase `public.files` (via un PATCH PostgREST)
+
+3. `front/`
+   - Interface **Streamlit**
+   - Connexion utilisateur (tokens Supabase)
+   - Upload documents et consultation des rapports de conformité
+
+## Flux de traitement de bout en bout
+
+1. Upload d'un document
+   - Le front appelle `POST /api/v1/files/upload` avec `client_id` + `file` (multipart).
+   - Le backend :
+     - upsert automatiquement `public.users`
+     - upload le fichier sur S3 dans `raw/<sha256>.<ext>`
+     - crée une ligne `files` dans l'état `pending`
+
+2. OCR + structuration (automatique)
+   - Un système externe déclenche le DAG Airflow `process_document_ocr` via l'API Airflow avec :
+     - `dag_run.conf.bucket`
+     - `dag_run.conf.key` (chemin S3 du fichier brut, ex. `raw/abc....pdf`)
+   - Le DAG :
+     - télécharge depuis S3
+     - exécute l'OCR Document AI
+     - sauvegarde en `bronze/{stem}.json`
+     - envoie le texte OCR à Gemini et obtient un JSON structuré
+     - sauvegarde en `silver/{stem}.json`
+     - met à jour Supabase `public.files` :
+       - `type`, `silver_content`, `s3_silver_path`, `processing_status="done"`
+
+3. Rapport de conformité (“gold analysis”)
+   - Le front appelle `POST /api/v1/conformity-reports` avec uniquement `client_id`.
+   - Le backend :
+     - liste les fichiers du client
+     - filtre ceux dont `processing_status == "done"`
+     - recalcule une analyse “gold” (consensus + checks)
+     - valide l'existence du SIREN via `https://recherche-entreprises.api.gouv.fr/...`
+     - enregistre `gold_content` dans `conformity_reports`
+     - fixe `processing_status` à `"done"` si des fichiers ont été traités, sinon `"error"`
+
+## Prérequis (avant de lancer)
 
-Traitement automatique de documents administratifs
+- Supabase :
+  - Exécuter `service-backend/supabase_schema.sql` dans le SQL Editor.
+  - Configurer les variables d'environnement du backend (voir `service-backend/api/.env.example`).
+- AWS S3 :
+  - Bucket accessible par le backend (upload `raw/*`).
+  - Bucket accessible par Airflow (lecture `raw/` + écriture `bronze/` et `silver/`).
+- Airflow / Clouds :
+  - Connexion `document_ai` pour Google Document AI.
+  - Accès S3 via `s3_bucket_medaillon`.
+  - Connexion Supabase via `supabase_access` (fournit `SUPABASE_URL` et `SUPABASE_SERVICE_ROLE_KEY` dans le champ `extra`).
 
-Vous allez développer en équipe une plateforme permettant :
+## Démarrage local (recommandé)
 
-i - l’upload multi-documents : pièces comptables sensibles
+### 1. Lancer le service backend
 
-ii - Classification automatique : factures, devis, attestation, etc.
+```bash
+cd service-backend
+cd api
+cp .env.example .env
+docker compose up --build
+```
 
-iii - Extraction des informations clés via OCR robustes : num SIREN, montants, ...
+- API : `http://localhost:8001`
+- OpenAPI : `http://localhost:8001/docs`
+- Health : `GET /health`
 
-iv - Vérification intelligente et détection automatique d’incohérences entre ces différents documents (éventuellement documents frauduleux) : incohérence entre SIRET et sur attestation et celle sur facture, par exemple
+### 2. Lancer Airflow (Astronomer)
 
-v - Stockage suivant une logique Data Lake : raw zone, clean zone et curated zone ; Architecture Medallion : bronze, silver et gold
+```bash
+cd airflow-astro
+astro dev start
+```
 
-vi - Remplissage automatique de 2 front-ends ; applications métiers, par exemple : CRM et outil de conformité (éventuellement BDD fournisseur)
+- Airflow Webserver : `http://localhost:8080/`
+- Login : `admin` / `admin`
 
-# STRUCTURE DU PROJET
+### 3. Lancer le front Streamlit
 
-amazon s3 bucket qui contient une archi data lake :
-- raw <- fichiers bruts (images, pdf, etc...)
-- bronze <- fichiers traités par OCR
-- silver <- fichiers traités par LLM
-- gold <- remontée des incohérences entre les différents documents d'un même client
+```bash
+cd front
+python -m venv .venv
+source .venv\Scripts\Activate.ps1  # Windows
+pip install -r requirements.txt
+```
 
-orchestration airflow via astro (astronomer) :
-- raw -> bronze (OCR)
-- bronze -> silver (LLM)
-- silver -> gold (Remonter des incohérences)
+Configurer `front/.env` :
 
-un OCR cloud (Document AI) qui va analyser les documents et les transformer en texte :
-- raw -> text -> bronze (au format parquet ou json, à définir)
+```env
+API_BASE_URL=http://localhost:8000
+```
 
-un LLM qui va analyser le texte et nous donner l'information de manière structurée :
-- text -> json -> silver (au format parquet ou json, à définir)
+Lancer :
 
-1 frontend streamlit ou l'on s'authentifie en tant que gestionnaire de clients, un client regroupe plusieurs documents :
-- factures
-- devis
-- KBIS
-- etc...
-le gestionnaire de clients vérifie que chacun des ses clients est bien conforme à la réglementation (RGPD, LGPD, etc...), il est aidé par notre outil qui croise les informations entre les différents documents.
+```bash
+streamlit run app.py
+```
 
-le streamlit est appuyé par une DB Supabase pour : 
-- les comptes gestionnaires de clients
-- les clients
-- les documents (accès à la silver & raw zone requise)
-- les incohérences (accès à la gold & silver zone requise)
-
-# BDD
-
-1. Structure générale
-
-utilisateurs : profiles
-entreprises clientes : organizations
-membres d’une entreprise : organization_members
-dossiers / clients finaux : subjects
-types de documents : document_types
-documents métiers : documents
-fichiers uploadés : document_files
-analyses IA document : analysis_runs
-détails des analyses document : analysis_findings
-analyses de cohérence dossier : subject_consistency_runs
-détails des incohérences dossier : subject_findings
-historique : document_events
-
-2 . Tables 
-
-profiles
-Profil applicatif d’un utilisateur.
-
-Champs :
-- id
-- email
-- full_name
-- is_active
-- created_at
-- updated_at
-
-
-organizations
-Entreprise cliente de la plateforme.
-
-Champs :
-- id
-- name
-- slug
-- is_active
-- created_at
-- updated_at
-
-
-organization_members
-Lien entre un utilisateur et une organisation avec son rôle.
-
-Champs :
-- id
-- organization_id
-- user_id
-- role
-- invited_by
-- created_at
-
-
-subjects
-Dossier / client final géré par une organisation.
-
-Champs :
-- id
-- organization_id
-- type
-- external_ref
-- display_name
-- legal_identifier
-- metadata
-- created_by
-- created_at
-- updated_at
-
-
-document_types
-Catalogue des types de documents.
-
-Champs :
-- id
-- code
-- label
-- description
-- is_active
-- created_at
-
-
-documents
-Objet métier principal représentant un document dans l’application.
-
-Champs :
-- id
-- organization_id
-- subject_id
-- document_type_id
-- title
-- status
-- current_file_id
-- latest_analysis_run_id
-- compliance_status
-- review_status
-- reviewed_by
-- reviewed_at
-- uploaded_by
-- metadata
-- created_at
-- updated_at
-
-
-document_files
-Fichier physique réellement stocké dans le bucket S3.
-
-Champs :
-- id
-- document_id
-- storage_bucket
-- storage_path
-- original_filename
-- mime_type
-- extension
-- size_bytes
-- sha256
-- page_count
-- version_no
-- upload_status
-- uploaded_by
-- created_at
-
-
-analysis_runs
-Historique des analyses IA au niveau document.
-Cette table porte les sorties bronze et silver.
-
-Champs :
-- id
-- document_id
-- document_file_id
-- model_name
-- model_version
-- status
-- bronze_status
-- silver_status
-- bronze_output
-- silver_output
-- error_message
-- created_at
-- started_at
-- finished_at
-
-
-analysis_findings
-Détails issus des analyses documentaires.
-Cette table sert surtout à stocker les contrôles techniques, les champs extraits, les alertes et les checks de conformité au niveau document.
-
-Champs :
-- id
-- analysis_run_id
-- finding_type
-- code
-- label
-- severity
-- is_pass
-- confidence
-- message
-- extracted_value
-- details
-- created_at
-
-
-subject_consistency_runs
-Historique des analyses gold au niveau dossier / client final.
-Cette table sert à comparer les résultats silver de plusieurs documents d’un même subject.
-
-Champs :
-- id
-- subject_id
-- status
-- input_analysis_run_ids
-- gold_output
-- error_message
-- created_at
-- started_at
-- finished_at
-
-
-subject_findings
-Détails des incohérences ou cohérences détectées au niveau dossier.
-
-Champs :
-- id
-- subject_consistency_run_id
-- code
-- label
-- severity
-- is_pass
-- confidence
-- message
-- details
-- created_at
-
-
-document_events
-Historique des événements liés à un document.
-
-Champs :
-- id
-- document_id
-- actor_user_id
-- event_type
-- payload
-- created_at
-
-3. Logique métier des tables
-
-profiles
-Stocke le profil applicatif de chaque utilisateur connecté.
-
-organizations
-Représente une entreprise cliente de la plateforme.
-
-organization_members
-Permet de gérer les rôles et l’appartenance d’un utilisateur à une organisation.
-
-subjects
-Représente le dossier client final sur lequel les documents sont déposés et analysés.
-
-document_types
-Normalise les types de documents supportés par la plateforme.
-
-documents
-Représente le document métier dans l’application, indépendamment du fichier physique.
-
-document_files
-Stocke la référence du fichier physique dans S3, ainsi que ses métadonnées techniques.
-
-analysis_runs
-Conserve l’historique du pipeline documentaire pour un document donné.
-Contient la sortie bronze et silver.
-
-analysis_findings
-Détaille les points remontés par l’analyse d’un document :
-- détection du type
-- extraction de champ
-- contrôles techniques
-- contrôles de conformité
-- alertes
-
-subject_consistency_runs
-Conserve l’historique des analyses gold au niveau dossier.
-Permet de recalculer la cohérence globale quand un nouveau document est ajouté.
-
-subject_findings
-Détaille les incohérences entre plusieurs documents d’un même dossier :
-- noms divergents
-- adresses différentes
-- dates incohérentes
-- informations société contradictoires
-- dossier incomplet
-
-document_events
-Permet de garder une traçabilité complète des événements sur un document.
+- Front : `http://localhost:8501`
 
+## Contrat API (côté backend)
+
+Base URL côté front : `API_BASE_URL/api/v1/`
+
+Endpoints clés :
+
+| Méthode | Route | Usage |
+|---------|--------|-------|
+| POST | `/auth/login` | Connexion |
+| POST | `/auth/register` | Inscription |
+| GET | `/auth/me` | Profil utilisateur |
+| GET/POST/DELETE | `/clients` | Gestion clients |
+| GET/POST/DELETE | `/files` | Gestion fichiers |
+| POST | `/files/upload` | Upload document (multipart) |
+| GET/POST/DELETE | `/conformity-reports` | Rapports de conformité |
+
+### Upload document (exemple)
+
+`POST /api/v1/files/upload` (multipart) :
+
+- `client_id` (form field)
+- `file` (UploadFile)
+- `Authorization: Bearer <access_token>`
+
+### Génération rapport de conformité
+
+`POST /api/v1/conformity-reports` :
+
+Requête attendue (minimale) :
+
+```json
+{
+  "client_id": "<uuid>"
+}
+```
+
+Le backend recalcule `gold_content` et fixe `processing_status` lui-même.
+
+## Déclenchement du DAG OCR Airflow
+
+Le DAG `process_document_ocr` n'est pas schedule (uniquement déclenché via REST API).
+
+Payload attendu dans `dag_run.conf` :
+
+```json
+{
+  "bucket": "<AWS_S3_BUCKET>",
+  "key": "<chemin S3, ex. raw/abc....pdf>"
+}
+```
+
+### Test de réception de payload
+
+`airflow-astro/dags/test_s3_event_reception.py` : valide que l'event reçu contient bien `bucket` et `key` (il log `dag_run.conf`).
+
+## Sorties (Data Lake)
+
+- `raw/<sha256>.<ext>` : fichier original uploadé par le backend
+- `bronze/{stem}.json` : texte OCR + métadonnées Document AI
+- `silver/{stem}.json` : JSON structuré Gemini (document détecté, score de confiance, champs extraits)
+- `conformity_reports.gold_content` : “gold analysis” (consensus + checks + éventuellement erreurs)
+
+Pour les schémas JSON exacts des fichiers `bronze/` et `silver/`, voir `airflow-astro/dags/process_document_ocr.py` et `airflow-astro/README.md`.
