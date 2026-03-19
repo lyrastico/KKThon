@@ -10,7 +10,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from services.file_service import FileRecord, FileServiceError, get_file
+from services.file_service import FileRecord, FileServiceError, get_file, delete_file
 
 # Progress plan
 
@@ -236,16 +236,15 @@ def render_files_section(files: list[FileRecord], access_token: str) -> None:
 
     if done:
         st.subheader(f"Documents disponibles ({len(done)})")
-        _render_done_table(done)
+        _render_done_table(done, access_token)
 
     if any_active:
         time.sleep(0.4)
         st.rerun()
 
 
-def _render_done_table(files: list[FileRecord]) -> None:
+def _render_done_table(files: list[FileRecord], access_token: str) -> None:
     """Compact table for processed files."""
-    from datetime import datetime
 
     def _elapsed_done(created_at: str, updated_at: str) -> str:
         try:
@@ -261,8 +260,8 @@ def _render_done_table(files: list[FileRecord]) -> None:
         except Exception:
             return "-"
 
-    hcols = st.columns([3, 1.5, 1.5, 2, 1.5, 1])
-    for col, label in zip(hcols, ["Nom", "Type", "Format", "Créé le", "Durée", "Action"]):
+    hcols = st.columns([3, 1.5, 1.5, 2, 1.5, 1, 1])
+    for col, label in zip(hcols, ["Nom", "Type", "Format", "Créé le", "Durée", "Ouvrir", "Supprimer"]):
         col.markdown(f"**{label}**")
     st.divider()
 
@@ -273,12 +272,18 @@ def _render_done_table(files: list[FileRecord]) -> None:
         )
         elapsed = _elapsed_done(f.created_at, f.updated_at)
 
-        c_name, c_type, c_fmt, c_date, c_elapsed, c_open = st.columns([3, 1.5, 1.5, 2, 1.5, 1])
+        c_name, c_type, c_fmt, c_date, c_elapsed, c_open, c_del = st.columns([3, 1.5, 1.5, 2, 1.5, 0.5, 0.5])
         c_name.write(f.original_filename)
         c_type.caption(f.type or "-")
         c_fmt.caption(f.file_format or "-")
         c_date.caption(created_str)
         c_elapsed.caption(elapsed)
-        if c_open.button("Ouvrir", key=f"open_done_{f.file_id}"):
+        if c_open.button("👁", key=f"open_done_{f.file_id}"):
             st.session_state.selected_file = str(f.file_id)
             st.rerun()
+        if c_del.button("🗑", key=f"del_done_{f.file_id}"):
+            try:
+                delete_file(access_token, f.file_id)
+                st.rerun()
+            except FileServiceError as e:
+                st.error(str(e))
