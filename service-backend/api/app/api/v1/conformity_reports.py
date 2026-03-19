@@ -62,7 +62,7 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
     for f in files:
         if f.processing_status == "done":
             source_files_meta.append({
-                "file_id": str(f.id),
+                "file_id": str(f.file_id),
                 "type": f.type,
                 "s3_raw_path": getattr(f, 's3_raw_path', None)
             })
