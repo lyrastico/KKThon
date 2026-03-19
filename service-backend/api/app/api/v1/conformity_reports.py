@@ -1,4 +1,5 @@
 import logging
+import httpx  # Plus adapté pour FastAPI que requests
 from uuid import UUID
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -53,6 +54,34 @@ def clean_text(val) -> str:
     if not val: return ""
     return str(val).strip().lower().replace(" ", "")
 
+# --- NOUVEAU : VERIFICATION EXTERNE API GOUV ---
+
+async def verify_siren_with_api(siren: str) -> dict:
+    """Vérifie l'existence réelle du SIREN sur l'API Gouv.fr"""
+    if not siren or len(siren) != 9:
+        return {"exists": False, "error": "Format invalide"}
+    
+    url = f"https://recherche-entreprises.api.gouv.fr/search?q={siren}"
+    headers = {'User-Agent': 'KKThon-App/1.0', 'Accept': 'application/json'}
+    
+    try:
+        async with httpx.AsyncClient(verify=False) as client: # verify=False pour le hackathon
+            response = await client.get(url, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('total_results', 0) > 0:
+                    res = data['results'][0]
+                    return {
+                        "exists": True,
+                        "nom_officiel": res.get('nom_complet'),
+                        "etat": res.get('etat_administratif'), # 'A' = Actif
+                        "activite": res.get('libelle_activite_principale')
+                    }
+    except Exception as e:
+        logger.error(f"Erreur API SIREN: {str(e)}")
+    
+    return {"exists": False}
+
 # --- MOTEUR DE GÉNÉRATION (LOGIQUE DE CONSENSUS) ---
 
 async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
@@ -61,7 +90,6 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
     
     for f in files:
         if f.processing_status == "done":
-            # On utilise f.file_id car tes logs montrent que c'est le nom du champ
             source_files_meta.append({
                 "file_id": str(f.file_id),
                 "type": f.type,
@@ -92,25 +120,42 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
             "results": {"status_global": "error", "checks": [], "errors": ["Aucun fichier traité trouvé."]}
         }
 
-    # 1. CONSENSUS SIREN STRICT (TOUS les documents)
+    # 1. CONSENSUS SIREN ET VÉRIFICATION API
     sirens_found = [d['siren'] for d in docs_data if d['siren']]
     if not sirens_found:
         errors.append("Aucun identifiant (SIREN/SIRET) trouvé dans les documents.")
     else:
         ref_siren = sirens_found[0]
+        
+        # --- APPEL API GOUV ---
+        api_info = await verify_siren_with_api(ref_siren)
+        checks.append({
+            "code": "API_SIREN_EXISTS",
+            "label": "Existence légale (API Gouv)",
+            "status": "pass" if api_info["exists"] else "fail",
+            "details": {
+                "siren": ref_siren,
+                "nom_officiel": api_info.get("nom_officiel", "Inconnu"),
+                "statut": "ACTIF" if api_info.get("etat") == "A" else "INACTIF/NON TROUVÉ"
+            }
+        })
+        if not api_info["exists"]:
+            errors.append(f"Le SIREN {ref_siren} est introuvable ou invalide dans la base SIRENE.")
+
+        # Vérification de la cohérence entre les documents
         all_match = True
         for doc in docs_data:
             if doc['siren']:
                 match = (doc['siren'] == ref_siren)
                 if not match: all_match = False
                 checks.append({
-                    "code": f"SIREN_CHECK_{doc['type'].upper()}",
+                    "code": f"SIREN_MATCH_{doc['type'].upper()}",
                     "label": f"Cohérence SIREN : {doc['type']}",
                     "status": "pass" if match else "fail",
                     "details": {"found": doc['siren'], "expected": ref_siren}
                 })
         if not all_match:
-            errors.append("Conflit d'identité : Les SIREN ne sont pas identiques sur tous les documents.")
+            errors.append("Conflit d'identité : Les SIREN diffèrent entre les documents.")
 
     # 2. RAISON SOCIALE
     names = [d for d in docs_data if d['raison_sociale']]
@@ -171,16 +216,27 @@ async def generate_gold_analysis(client_id: UUID, files: list) -> dict:
                 "details": {"invoice_date": f_date}
             })
 
+    # CALCUL DU STATUT GLOBAL
     status_global = "pass"
-    if any(c["status"] == "fail" for c in checks) or errors: status_global = "fail"
-    elif any(c["status"] == "warning" for c in checks): status_global = "warning"
+    if any(c["status"] == "fail" for c in checks) or errors: 
+        status_global = "fail"
+    elif any(c["status"] == "warning" for c in checks): 
+        status_global = "warning"
 
     return {
-        "meta": {"client_id": str(client_id), "generated_at": datetime.utcnow().isoformat(), "source_files": source_files_meta},
-        "results": {"status_global": status_global, "checks": checks, "errors": errors}
+        "meta": {
+            "client_id": str(client_id), 
+            "generated_at": datetime.utcnow().isoformat(), 
+            "source_files": source_files_meta
+        },
+        "results": {
+            "status_global": status_global, 
+            "checks": checks, 
+            "errors": errors
+        }
     }
 
-# --- ROUTES (FIXÉES) ---
+# --- ROUTES ---
 
 @router.post("", response_model=ConformityReportRead, status_code=status.HTTP_201_CREATED)
 async def create_report(
